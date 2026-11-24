@@ -1,0 +1,29 @@
+// Windows resources: application icon and version information.
+#include <winver.h>
+IDI_ICON1 ICON "@BELDEX_GUI_ICO@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "The Beldex Project"
+      VALUE "FileDescription",  "Beldex Wallet"
+      VALUE "FileVersion",      "@PROJECT_VERSION@"
+      VALUE "InternalName",     "beldex-wallet-gui"
+      VALUE "LegalCopyright",   "Copyright (c) 2026 The Beldex Project. BSD-3-Clause."
+      VALUE "OriginalFilename", "beldex-wallet-gui.exe"
+      VALUE "ProductName",      "Beldex Wallet"
+      VALUE "ProductVersion",   "@PROJECT_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

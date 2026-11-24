@@ -1,0 +1,8 @@
+#!/bin/sh
+# Remove the links postinst created (only ones pointing into our install).
+P=@CPACK_PACKAGING_INSTALL_PREFIX@
+for l in /usr/bin/beldex-wallet-gui /usr/share/applications/io.beldex.WalletGui.desktop \
+         /usr/share/metainfo/io.beldex.WalletGui.metainfo.xml /usr/share/icons/hicolor/*/apps/io.beldex.WalletGui.png; do
+    [ -L "$l" ] && case "$(readlink "$l")" in "$P"/*) rm -f "$l" ;; esac
+done
+exit 0

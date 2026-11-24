@@ -1,0 +1,6 @@
+/build*/
+/shots/
+*.user
+.qtcreator/
+compile_commands.json
+/dist/

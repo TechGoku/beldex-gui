@@ -1,0 +1,15 @@
+#!/bin/sh
+# Link the self-contained /opt install into the usual places.
+set -e
+P=@CPACK_PACKAGING_INSTALL_PREFIX@
+ln -sf "$P/bin/beldex-wallet-gui" /usr/bin/beldex-wallet-gui
+for f in "$P"/share/applications/*.desktop; do ln -sf "$f" /usr/share/applications/; done
+for f in "$P"/share/metainfo/*.xml; do mkdir -p /usr/share/metainfo; ln -sf "$f" /usr/share/metainfo/; done
+for d in "$P"/share/icons/hicolor/*/apps; do
+    size=$(basename "$(dirname "$d")")
+    mkdir -p "/usr/share/icons/hicolor/$size/apps"
+    ln -sf "$d/io.beldex.WalletGui.png" "/usr/share/icons/hicolor/$size/apps/io.beldex.WalletGui.png"
+done
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+exit 0

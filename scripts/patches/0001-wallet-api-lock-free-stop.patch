@@ -1,0 +1,25 @@
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index bd4e7cc..293d287 100755
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -62,7 +62,8 @@ using namespace cryptonote;
+ #define LOCK_REFRESH() \
+     bool refresh_enabled = m_refreshEnabled; \
+     m_refreshEnabled = false; \
+-    wallet()->stop(); \
++    /* wallet2::stop() is an atomic flag; call it without the refresh lock so it can interrupt a scan */ \
++    m_wallet_ptr->stop(); \
+     m_refreshCV.notify_one(); \
+     std::scoped_lock lock(m_refreshMutex, m_refreshMutex2); \
+     auto scope_exit_handler = epee::misc_utils::create_scope_leave_handler_shared([&](){ \
+@@ -995,7 +996,9 @@ std::string WalletImpl::path() const
+ EXPORT
+ void WalletImpl::stop()
+ {
+-    wallet()->stop();
++    // Must not take the refresh lock: the refresh thread holds it for the whole scan, so locking here
++    // made stop() wait for the scan it is meant to interrupt. wallet2::stop() only sets an atomic flag.
++    m_wallet_ptr->stop();
+ }
+ 
+ EXPORT

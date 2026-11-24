@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.beldex.WalletGui</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+  <name>Beldex Wallet</name>
+  <summary>Desktop wallet for Beldex (BDX)</summary>
+  <description>
+    <p>A native Qt wallet for Beldex. Send and receive private BDX, manage subaddresses and accounts,
+    stake to master nodes, register Beldex Name Service names, and run your own local node.</p>
+  </description>
+  <launchable type="desktop-id">io.beldex.WalletGui.desktop</launchable>
+  <url type="homepage">https://beldex.io</url>
+  <content_rating type="oars-1.1"/>
+  <provides><binary>beldex-wallet-gui</binary></provides>
+  <releases><release version="@PROJECT_VERSION@" date="2026-11-25"/></releases>
+</component>

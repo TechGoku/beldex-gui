@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Beldex Wallet
+GenericName=Cryptocurrency Wallet
+Comment=Private, untraceable BDX: send, receive, stake to master nodes and register BNS names
+Exec=beldex-wallet-gui %u
+Icon=io.beldex.WalletGui
+Terminal=false
+Categories=Office;Finance;Qt;
+Keywords=beldex;bdx;wallet;crypto;privacy;bns;masternode;
+MimeType=x-scheme-handler/beldex;
+StartupWMClass=beldex-wallet-gui
+StartupNotify=true
