@@ -1,0 +1,9 @@
+# Keep LF everywhere so scripts and patches work on Windows checkouts too.
+* text=auto eol=lf
+*.sh text eol=lf
+*.patch -text
+*.in text eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.ttf binary

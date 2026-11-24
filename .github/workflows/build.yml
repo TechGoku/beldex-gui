@@ -19,8 +19,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-22.04,     qt_arch: linux_gcc_64,    qt_dir: gcc_64 }
-          - { arch: arm64,  runner: ubuntu-22.04-arm, qt_arch: linux_gcc_arm64, qt_dir: gcc_arm64 }
+          - { arch: x86_64, runner: ubuntu-22.04,     qt_host: linux,       qt_arch: linux_gcc_64,    qt_dir: gcc_64 }
+          - { arch: arm64,  runner: ubuntu-22.04-arm, qt_host: linux_arm64, qt_arch: linux_gcc_arm64, qt_dir: gcc_arm64 }
     # Ubuntu 22.04 (glibc 2.35) so the packages run on most current distributions.
     runs-on: ${{ matrix.runner }}
     steps:
@@ -37,7 +37,7 @@ jobs:
       - name: Qt ${{ env.QT_VERSION }}
         run: |
           pip3 install --user 'aqtinstall==3.*'
-          python3 -m aqt install-qt linux desktop $QT_VERSION ${{ matrix.qt_arch }} --outputdir $HOME/Qt
+          python3 -m aqt install-qt ${{ matrix.qt_host }} desktop $QT_VERSION ${{ matrix.qt_arch }} --outputdir $HOME/Qt
           echo "QT_DIR=$HOME/Qt/$QT_VERSION/${{ matrix.qt_dir }}" >> $GITHUB_ENV
 
       - name: Cache Beldex core build
@@ -47,10 +47,11 @@ jobs:
           key: core-linux-${{ matrix.arch }}-${{ hashFiles('.git/modules/external/beldex/HEAD', 'scripts/build-beldex-core.sh', 'scripts/patches/*') }}
 
       - name: Build Beldex core (wallet library + beldexd)
-        run: ./scripts/build-beldex-core.sh
+        run: ./scripts/build-beldex-core.sh 2>&1 | tee ci-core.log; exit ${PIPESTATUS[0]}
 
       - name: Tests (engine smoke + demo UI tour)
         run: |
+          exec > >(tee ci-tests.log) 2>&1
           cmake -S . -B build-demo -G Ninja -DBELDEX_GUI_MOCK=ON -DCMAKE_PREFIX_PATH=$QT_DIR
           cmake --build build-demo
           QT_QPA_PLATFORM=offscreen BELDEX_GUI_SHOTS=shots ./build-demo/beldex-wallet-gui | tee tour.log
@@ -60,7 +61,15 @@ jobs:
           ./build/engine_smoke
 
       - name: Package (AppImage, .deb, .rpm, .tar.gz)
-        run: ./scripts/package.sh
+        run: ./scripts/package.sh 2>&1 | tee ci-package.log; exit ${PIPESTATUS[0]}
+
+      - name: Report failure (log tail as annotation)
+        if: failure()
+        run: |
+          for f in ci-*.log; do
+            [ -f "$f" ] || continue
+            python3 -c "import sys; t=open(sys.argv[1],errors='replace').read().splitlines()[-60:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25').replace(chr(13),'') for l in t))" "$f"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -73,8 +82,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: arm64,  runner: macos-14 }
-          - { arch: x86_64, runner: macos-13 }
+          # macos-13/14 runners are retired; macos-15-intel is GitHub's remaining Intel image.
+          - { arch: arm64,  runner: macos-15 }
+          - { arch: x86_64, runner: macos-15-intel }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -96,16 +106,25 @@ jobs:
           key: core-macos-${{ matrix.arch }}-${{ hashFiles('.git/modules/external/beldex/HEAD', 'scripts/build-beldex-core.sh', 'scripts/patches/*') }}
 
       - name: Build Beldex core (wallet library + beldexd)
-        run: ./scripts/build-beldex-core.sh
+        run: ./scripts/build-beldex-core.sh 2>&1 | tee ci-core.log; exit ${PIPESTATUS[0]}
 
       - name: Tests (engine smoke)
         run: |
+          exec > >(tee ci-tests.log) 2>&1
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$QT_DIR
           cmake --build build --target engine_smoke
           ./build/engine_smoke
 
       - name: Package (.dmg)
-        run: ./scripts/package.sh
+        run: ./scripts/package.sh 2>&1 | tee ci-package.log; exit ${PIPESTATUS[0]}
+
+      - name: Report failure (log tail as annotation)
+        if: failure()
+        run: |
+          for f in ci-*.log; do
+            [ -f "$f" ] || continue
+            python3 -c "import sys; t=open(sys.argv[1],errors='replace').read().splitlines()[-60:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25').replace(chr(13),'') for l in t))" "$f"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -119,6 +138,11 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
+      # Windows git converts to CRLF by default, which breaks bash scripts and the core patch.
+      - name: Keep LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
@@ -127,8 +151,9 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          suppress-deprecation-warnings: msystem-mingw64   # UCRT64 migration is a separate change
           install: >-
-            git make autoconf automake libtool pkgconf gperf zip
+            git make autoconf automake libtool pkgconf gperf zip python
             mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base mingw-w64-x86_64-qt6-declarative mingw-w64-x86_64-qt6-svg
             mingw-w64-x86_64-qt6-tools mingw-w64-x86_64-nsis
@@ -140,16 +165,25 @@ jobs:
           key: core-windows-x86_64-${{ hashFiles('.git/modules/external/beldex/HEAD', 'scripts/build-beldex-core.sh', 'scripts/patches/*') }}
 
       - name: Build Beldex core (wallet library + beldexd)
-        run: ./scripts/build-beldex-core.sh
+        run: ./scripts/build-beldex-core.sh 2>&1 | tee ci-core.log; exit ${PIPESTATUS[0]}
 
       - name: Tests (engine smoke)
         run: |
+          exec > >(tee ci-tests.log) 2>&1
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target engine_smoke
           ./build/engine_smoke.exe
 
       - name: Package (installer .exe, .zip)
-        run: ./scripts/package.sh
+        run: ./scripts/package.sh 2>&1 | tee ci-package.log; exit ${PIPESTATUS[0]}
+
+      - name: Report failure (log tail as annotation)
+        if: failure()
+        run: |
+          for f in ci-*.log; do
+            [ -f "$f" ] || continue
+            python3 -c "import sys; t=open(sys.argv[1],errors='replace').read().splitlines()[-60:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25').replace(chr(13),'') for l in t))" "$f"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
