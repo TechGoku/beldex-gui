@@ -63,6 +63,10 @@ if [ "$(uname)" = "Linux" ] && { [ -e /usr/lib/x86_64-linux-gnu/libzstd.so ] || 
     EXTRA_LIBS_ARG="-DCMAKE_CXX_STANDARD_LIBRARIES=-lzstd"
 fi
 
+# CMake 4 (Homebrew, MSYS2) refuses projects declaring cmake_minimum_required < 3.5, which Beldex core's
+# bundled libuv still does. The env var also reaches the static-deps sub-builds; CMake 3 ignores it.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
 echo "==> Configuring $BUILD"
 cmake -S "$SRC" -B "$BUILD" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -73,6 +77,7 @@ cmake -S "$SRC" -B "$BUILD" \
     -DUSE_LTO=OFF \
     -DUSE_READLINE=OFF \
     -DWITH_SYSTEMD=OFF \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     ${EXTRA_LIBS_ARG:+"$EXTRA_LIBS_ARG"} \
     ${BELDEX_CMAKE_ARGS:-}
 
