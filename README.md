@@ -104,10 +104,10 @@ switch creates that copy from the seed and asks where to start scanning: now (a 
 history, or a block. Later switches just save one and open the other. A testnet copy's first sync downloads the whole
 testnet block list (core has no testnet checkpoints to skip it), which takes several minutes.
 
-**Testnet status (checked 2026-11-25).** Testnet is on hard fork **v22**. Wallets sync through the public node above.
-Running your own testnet node still needs core with the testnet v21/v22 rules: every public Beldex core branch stops at
-v20 for testnet (`BELDEX_SOURCE_DIR`, or a branch in `external/beldex`, plus a reachable peer under Settings › Node ›
-Testnet peers).
+**Testnet status (checked 2026-11-25).** Testnet is on hard fork **v22**, whose blocks carry privacy-token
+transactions. Released Beldex core can't read those, so `external/beldex` tracks core's `feature-privacy-token` branch
+(what the public testnet node runs). Mainnet behaves as before on it. A local testnet node built from this core also needs
+a reachable peer under Settings › Node › Testnet peers.
 
 ## Building
 

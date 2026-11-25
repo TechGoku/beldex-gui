@@ -244,11 +244,12 @@ public:
         std::optional<std::vector<uint64_t>> amt;
         if (!amounts.isEmpty())
             amt = std::vector<uint64_t>(amounts.begin(), amounts.end());
-        return wrap(m_w->createTransactionMultDest(d, amt, priority, account, {}));
+        return wrap(m_w->createTransactionMultDest(d, amt, std::nullopt /* BDX */, priority, account, {}));
     }
     std::unique_ptr<IPendingTx> createSweepAll(uint32_t priority, quint32 account) override
     {
-        return wrap(m_w->createSweepAllTransaction(priority, account, {}));
+        // "BDX": native coins only (no token id would sweep every privacy token too); no address: to ourselves.
+        return wrap(m_w->createSweepAllTransaction(std::string("BDX"), std::nullopt, priority, account, {}));
     }
     quint64 estimateFee(uint32_t priority, quint32 recipients) const override
     {

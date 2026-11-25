@@ -19,11 +19,12 @@ Each package includes the wallet and `beldexd`, which the wallet can run as a lo
 - Create, restore (seed or keys) and open wallets on mainnet, testnet and devnet
 - Send (several recipients, Flash), receive (accounts, subaddresses, QR codes), history with CSV export, contacts
 - Master node staking and unlocking; Beldex Name Service: register, renew, update
-- Nodes: Auto (a public node, otherwise a local beldexd), Remote, or Local
+- Nodes: Auto (a public node, otherwise a local beldexd), Remote, or Local. Public nodes for mainnet and testnet
+- Switch a wallet between mainnet and testnet from the network badge: the same seed, kept as a separate wallet per network
 - Live sync progress; the app stays usable and closes quickly during long scans
 
 ### Please note
 
 - **Pre-release.** Sending, staking and BNS haven't been tested with real funds yet. Try them with small amounts or on testnet first.
 - **Unsigned builds.** On Windows, SmartScreen asks you to confirm ("More info" → "Run anyway"). On macOS, right-click the app → Open the first time.
-- Testnet sync needs Beldex core with the current testnet rules (v22), and devnet can't start in current core. Mainnet is fully supported.
+- Built on Beldex core's `feature-privacy-token` branch, which is what the testnet (v22) runs; it isn't a Beldex core release yet. The first switch of a wallet to testnet downloads the testnet block list, which takes several minutes. Devnet can't start in current core.
