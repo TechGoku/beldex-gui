@@ -183,6 +183,11 @@ jobs:
           cp ../build-win64/engine_smoke.exe */bin/
           WINEDEBUG=-all timeout 300 wine */bin/engine_smoke.exe
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beldex-wallet-windows-x86_64
+          path: dist/*
+
       - name: Report failure (log tail as annotation)
         if: failure()
         run: |
