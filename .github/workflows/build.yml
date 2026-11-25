@@ -203,11 +203,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4          # for .github/release-notes.md only
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
-      - name: Attach packages to the release
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Publish the release with all packages
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes dist/* \
+          # 0.x versions and tags with a suffix (v1.0.0-rc1) are published as pre-releases.
+          PRE=""
+          case "$GITHUB_REF_NAME" in v0.*|*-*) PRE="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "Beldex Wallet $GITHUB_REF_NAME" --notes-file .github/release-notes.md --generate-notes $PRE dist/* \
             || gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist/*
