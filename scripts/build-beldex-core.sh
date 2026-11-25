@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Builds Beldex core's wallet library (libwallet_merged.a) for beldex-gui.
 #
-#   ./scripts/build-beldex-core.sh            # release, all cores
+#   ./scripts/build-beldex-core.sh                       # for this machine
 #   JOBS=4 ./scripts/build-beldex-core.sh
+#   BELDEX_TARGET=win64 ./scripts/build-beldex-core.sh    # Windows x64, cross-compiled on Linux (needs
+#                                                          # g++-mingw-w64-x86-64-posix); output in build/win64
 #
 # BUILD_STATIC_DEPS downloads and statically builds Beldex's dependencies (boost, openssl,
 # sodium, zmq, sqlite, curl, …) so the GUI binary has no runtime dependency on them. The
@@ -11,7 +13,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${BELDEX_SOURCE_DIR:-$ROOT/external/beldex}"
-BUILD="${BELDEX_BUILD_DIR:-$SRC/build/release}"
+TARGET="${BELDEX_TARGET:-native}"
+case "$TARGET" in
+    native) BUILD="${BELDEX_BUILD_DIR:-$SRC/build/release}" ;;
+    win64)  BUILD="${BELDEX_BUILD_DIR:-$SRC/build/win64}" ;;   # core's supported Windows route: MinGW cross build
+    *) echo "unknown BELDEX_TARGET=$TARGET (native, win64)" >&2; exit 1 ;;
+esac
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 
 if [ ! -f "$SRC/src/wallet/api/wallet2_api.h" ]; then
@@ -24,6 +31,7 @@ missing=()
 for tool in cmake make git autoreconf libtoolize pkg-config gperf; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
+[ "$TARGET" = win64 ] && ! command -v x86_64-w64-mingw32-g++-posix >/dev/null && missing+=("x86_64-w64-mingw32-g++-posix (apt: g++-mingw-w64-x86-64-posix)")
 if [ "$(uname)" = "Linux" ] && [ ${#missing[@]} -gt 0 ]; then
     echo "Missing build tools: ${missing[*]}" >&2
     echo "Debian/Ubuntu: sudo apt install build-essential cmake git autoconf automake libtool pkg-config gperf" >&2
@@ -59,7 +67,7 @@ done
 
 # Beldex's static curl build auto-detects the host's zstd; programs linking it (beldexd) then need -lzstd.
 EXTRA_LIBS_ARG=""
-if [ "$(uname)" = "Linux" ] && { [ -e /usr/lib/x86_64-linux-gnu/libzstd.so ] || [ -e /usr/lib/libzstd.so ] || ldconfig -p 2>/dev/null | grep -q libzstd; }; then
+if [ "$TARGET" = native ] && [ "$(uname)" = "Linux" ] && { [ -e /usr/lib/x86_64-linux-gnu/libzstd.so ] || [ -e /usr/lib/libzstd.so ] || ldconfig -p 2>/dev/null | grep -q libzstd; }; then
     EXTRA_LIBS_ARG="-DCMAKE_CXX_STANDARD_LIBRARIES=-lzstd"
 fi
 
@@ -70,13 +78,14 @@ export CMAKE_POLICY_VERSION_MINIMUM=3.5
 # macOS: core's static deps pass -isysroot ${CMAKE_OSX_SYSROOT}; when that is empty the next flag is taken as
 # the sysroot and the C++ headers vanish ("'cstddef' file not found"). Give it the SDK explicitly.
 SYSROOT_ARG=""
-if [ "$(uname)" = "Darwin" ]; then
+if [ "$TARGET" = native ] && [ "$(uname)" = "Darwin" ]; then
     SYSROOT_ARG="-DCMAKE_OSX_SYSROOT=$(xcrun --sdk macosx --show-sdk-path)"
 fi
 
 # Windows (MSYS2): Ninja runs the static-deps build steps through cmd.exe, where "autoreconf && ./configure"
 # can't run. MSYS Makefiles run every step through sh, like on Linux and macOS.
 GEN_ARG=""
+[ "$TARGET" = win64 ] && GEN_ARG="-DCMAKE_TOOLCHAIN_FILE=$SRC/cmake/64-bit-toolchain.cmake"
 case "$(uname -s)" in
     MINGW*|MSYS*) GEN_ARG="-GMSYS Makefiles" ;;
 esac

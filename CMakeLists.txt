@@ -86,8 +86,9 @@ if(BELDEX_GUI_MOCK)
     endif()
 else()
     message(STATUS "beldex-gui: Beldex core engine (${BELDEX_BUILD_DIR})")
+    # NO_CMAKE_FIND_ROOT_PATH: when cross-compiling (Windows), the toolchain would otherwise re-root these paths.
     find_library(BELDEX_WALLET_MERGED NAMES wallet_merged
-        PATHS "${BELDEX_BUILD_DIR}/src/wallet/api" "${BELDEX_BUILD_DIR}/lib" NO_DEFAULT_PATH)
+        PATHS "${BELDEX_BUILD_DIR}/src/wallet/api" "${BELDEX_BUILD_DIR}/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     if(NOT EXISTS "${BELDEX_WALLET_API_HEADER}" OR NOT BELDEX_WALLET_MERGED)
         message(FATAL_ERROR
             "Beldex core wallet library not found.\n"
@@ -106,10 +107,10 @@ else()
     # but does not merge. Order matters: hidapi -> libusb -> libudev.
     # The hidapi library is named per OS: hidapi-libusb (Linux), hidapi (Windows, macOS).
     find_library(BELDEX_GUI_DEP_hidapi NAMES libhidapi-libusb.a libhidapi.a libhidapi-hidraw.a
-        PATHS "${BELDEX_BUILD_DIR}/static-deps/lib" NO_DEFAULT_PATH)
+        PATHS "${BELDEX_BUILD_DIR}/static-deps/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     foreach(dep usb-1.0 udev)
         find_library(BELDEX_GUI_DEP_${dep} NAMES lib${dep}.a
-            PATHS "${BELDEX_BUILD_DIR}/static-deps/lib" NO_DEFAULT_PATH)
+            PATHS "${BELDEX_BUILD_DIR}/static-deps/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     endforeach()
     foreach(lib BELDEX_GUI_DEP_hidapi BELDEX_GUI_DEP_usb-1.0 BELDEX_GUI_DEP_udev)
         if(${lib})
@@ -117,7 +118,9 @@ else()
         endif()
     endforeach()
     # Beldex's static curl auto-detects the host's zstd for content-encoding; link it (statically if possible).
-    find_library(BELDEX_GUI_ZSTD NAMES libzstd.a zstd)
+    if(UNIX)
+        find_library(BELDEX_GUI_ZSTD NAMES libzstd.a zstd)
+    endif()
     if(BELDEX_GUI_ZSTD)
         target_link_libraries(beldex-wallet-gui PRIVATE ${BELDEX_GUI_ZSTD})
     endif()
@@ -187,6 +190,39 @@ if(BELDEX_GUI_DEPLOY_QT)
         NO_UNSUPPORTED_PLATFORM_ERROR
     )
     install(SCRIPT ${BELDEX_GUI_DEPLOY_SCRIPT})
+endif()
+
+# Windows built on Linux (cross-compile): windeployqt can't run here, so bundle Qt and the MinGW runtime
+# directly. Layout matches windeployqt: DLLs next to the exe, plugins/ and qml/ beside it, qt.conf to find them.
+if(WIN32 AND CMAKE_CROSSCOMPILING AND BELDEX_GUI_DEPLOY_QT)
+    set(_qt "${QT6_INSTALL_PREFIX}")
+    file(GLOB _qt_dlls "${_qt}/bin/Qt6*.dll")
+    # Leave out only developer tooling; anything a QML plugin might load stays in.
+    list(FILTER _qt_dlls EXCLUDE REGEX "(Test|Designer|Help|UiTools|QmlLS|QmlDom|QmlCompiler|QmlToolingSettings)[^/]*\\.dll$")
+    install(FILES ${_qt_dlls} DESTINATION ${CMAKE_INSTALL_BINDIR})
+    foreach(_rt libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll)
+        execute_process(COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=${_rt} OUTPUT_VARIABLE _p OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT EXISTS "${_p}")
+            file(GLOB _p "/usr/x86_64-w64-mingw32/lib/${_rt}" "${_qt}/bin/${_rt}")
+        endif()
+        if(_p)
+            list(GET _p 0 _p)
+            install(FILES "${_p}" DESTINATION ${CMAKE_INSTALL_BINDIR})
+        else()
+            message(WARNING "beldex-gui: MinGW runtime ${_rt} not found; the Windows package may not start")
+        endif()
+    endforeach()
+    foreach(_dir platforms styles imageformats iconengines tls networkinformation generic)
+        if(EXISTS "${_qt}/plugins/${_dir}")
+            install(DIRECTORY "${_qt}/plugins/${_dir}" DESTINATION ${CMAKE_INSTALL_BINDIR}/plugins FILES_MATCHING PATTERN "*.dll" PATTERN "*d.dll" EXCLUDE)
+        endif()
+    endforeach()
+    foreach(_mod QtQuick QtQml QtCore Qt)
+        install(DIRECTORY "${_qt}/qml/${_mod}" DESTINATION ${CMAKE_INSTALL_BINDIR}/qml
+            PATTERN "*.debug" EXCLUDE PATTERN "*.pdb" EXCLUDE PATTERN "designer" EXCLUDE)
+    endforeach()
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/qt.conf "[Paths]\nPrefix = .\nPlugins = plugins\nQmlImports = qml\n")
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/qt.conf DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # The local node (Settings › Node › Local) ships next to the app so DaemonManager finds it.

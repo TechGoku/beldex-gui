@@ -138,50 +138,50 @@ jobs:
           path: dist/*
 
   windows:
+    # Cross-compiled on Linux: Beldex core's static-deps build supports Windows only this way (MinGW-w64,
+    # core's cmake/64-bit-toolchain.cmake). The GUI uses Qt's official Windows MinGW build.
     name: Windows x86_64
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    runs-on: ubuntu-24.04
+    env:
+      BELDEX_TARGET: win64
     steps:
-      # Windows git converts to CRLF by default, which breaks bash scripts and the core patch.
-      - name: Keep LF line endings
-        shell: pwsh
-        run: git config --global core.autocrlf false
-
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
-      # Beldex core's documented Windows toolchain is MSYS2 MinGW; Qt comes from the same environment.
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          suppress-deprecation-warnings: msystem-mingw64   # UCRT64 migration is a separate change
-          install: >-
-            git make autoconf automake libtool pkgconf gperf zip python
-            mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-qt6-base mingw-w64-x86_64-qt6-declarative mingw-w64-x86_64-qt6-svg
-            mingw-w64-x86_64-qt6-tools mingw-w64-x86_64-nsis
+      - name: System packages (MinGW-w64, NSIS, Wine for tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build git autoconf automake libtool pkg-config gperf \
+            g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 nsis zip unzip python3-pip wine wine64
+
+      - name: Qt ${{ env.QT_VERSION }} (Windows target + Linux host tools)
+        run: |
+          pip3 install --user --break-system-packages 'aqtinstall==3.*'
+          python3 -m aqt install-qt linux desktop $QT_VERSION linux_gcc_64 --outputdir $HOME/Qt
+          python3 -m aqt install-qt windows desktop $QT_VERSION win64_mingw --outputdir $HOME/Qt
+          echo "QT_HOST_PATH=$HOME/Qt/$QT_VERSION/gcc_64" >> $GITHUB_ENV
+          echo "QT_DIR=$HOME/Qt/$QT_VERSION/mingw_64" >> $GITHUB_ENV
 
       - name: Cache Beldex core build
         uses: actions/cache@v4
         with:
-          path: external/beldex/build/release
-          key: core-windows-x86_64-${{ hashFiles('.git/modules/external/beldex/HEAD', 'scripts/build-beldex-core.sh', 'scripts/patches/*') }}
+          path: external/beldex/build/win64
+          key: core-win64-${{ hashFiles('.git/modules/external/beldex/HEAD', 'scripts/build-beldex-core.sh', 'scripts/patches/*') }}
 
-      - name: Build Beldex core (wallet library + beldexd)
+      - name: Build Beldex core for Windows (wallet library + beldexd.exe)
         run: ./scripts/build-beldex-core.sh 2>&1 | tee ci-core.log; exit ${PIPESTATUS[0]}
-
-      - name: Tests (engine smoke)
-        run: |
-          exec > >(tee ci-tests.log) 2>&1
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target engine_smoke
-          ./build/engine_smoke.exe
 
       - name: Package (installer .exe, .zip)
         run: ./scripts/package.sh 2>&1 | tee ci-package.log; exit ${PIPESTATUS[0]}
+
+      - name: Tests under Wine (engine smoke as a Windows binary)
+        run: |
+          exec > >(tee ci-tests.log) 2>&1
+          cmake --build build-win64 --target engine_smoke
+          mkdir -p wine-test && cd wine-test
+          unzip -q ../dist/*windows-x86_64.zip
+          cp ../build-win64/engine_smoke.exe */bin/
+          WINEDEBUG=-all timeout 300 wine */bin/engine_smoke.exe
 
       - name: Report failure (log tail as annotation)
         if: failure()
@@ -190,11 +190,6 @@ jobs:
             [ -f "$f" ] || continue
             python3 -c "import sys,re; L=[l.replace(chr(13),'') for l in open(sys.argv[1],errors='replace').read().splitlines()]; E=[l for l in L if re.search(r'(error|FAILED|fatal|not found|No such file|undefined reference|Permission denied)', l, re.I)][:40]; t=E+['----- last lines -----']+L[-40:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25') for l in t))" "$f"
           done
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: beldex-wallet-windows-x86_64
-          path: dist/*
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

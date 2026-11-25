@@ -3,7 +3,8 @@
 #
 #   QT_DIR=~/Qt/6.8.3/gcc_64 ./scripts/package.sh          # Linux:   AppImage, .deb, .rpm*, .tar.gz
 #   QT_DIR=~/Qt/6.8.3/macos  ./scripts/package.sh          # macOS:   .dmg
-#   ./scripts/package.sh                                    # Windows (MSYS2 MINGW64 shell): .exe installer, .zip
+#   BELDEX_TARGET=win64 QT_DIR=~/Qt/6.8.3/mingw_64 QT_HOST_PATH=~/Qt/6.8.3/gcc_64 ./scripts/package.sh
+#                                                           # Windows x64 from Linux: .exe installer, .zip
 #
 #   * .rpm only when rpmbuild is installed.
 # Beldex core must be built first (scripts/build-beldex-core.sh); the local node (beldexd) is bundled.
@@ -16,6 +17,7 @@ DIST="$ROOT/dist"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 APPIMAGETOOL_VERSION="1.9.1"
 
+TARGET="${BELDEX_TARGET:-native}"
 case "$(uname -s)" in
     Linux*) OS=linux ;;
     Darwin*) OS=macos ;;
@@ -23,13 +25,25 @@ case "$(uname -s)" in
     *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
 esac
 ARCH="$(uname -m)"; case "$ARCH" in arm64|aarch64) ARCH=arm64 ;; *) ARCH=x86_64 ;; esac
+CROSS_ARGS=()
+if [ "$TARGET" = win64 ]; then
+    # Cross-compile for Windows: core's MinGW toolchain, Windows Qt for the target, Linux Qt for host tools.
+    OS=windows; ARCH=x86_64
+    BUILD="${BUILD_DIR:-$ROOT/build-win64}"
+    : "${QT_HOST_PATH:?set QT_HOST_PATH to a Linux Qt (e.g. ~/Qt/6.8.3/gcc_64)}"
+    CROSS_ARGS=(-DCMAKE_TOOLCHAIN_FILE="$ROOT/external/beldex/cmake/64-bit-toolchain.cmake"
+                -DQT_HOST_PATH="$QT_HOST_PATH"
+                -DBELDEX_BUILD_DIR="$ROOT/external/beldex/build/win64")
+fi
 
 PREFIX_ARGS=()
 [ -n "${QT_DIR:-}" ] && PREFIX_ARGS=(-DCMAKE_PREFIX_PATH="$QT_DIR")
 GEN=(); command -v ninja >/dev/null && GEN=(-G Ninja)
 
 echo "==> Configuring ($OS/$ARCH) in $BUILD"
-cmake -S "$ROOT" -B "$BUILD" "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release "${PREFIX_ARGS[@]}" ${BELDEX_GUI_CMAKE_ARGS:-}
+# ${a[@]+"${a[@]}"}: empty arrays are fine under set -u even on macOS's bash 3.2
+cmake -S "$ROOT" -B "$BUILD" ${GEN[@]+"${GEN[@]}"} -DCMAKE_BUILD_TYPE=Release ${PREFIX_ARGS[@]+"${PREFIX_ARGS[@]}"} \
+    ${CROSS_ARGS[@]+"${CROSS_ARGS[@]}"} ${BELDEX_GUI_CMAKE_ARGS:-}
 echo "==> Building"
 cmake --build "$BUILD" -j "$JOBS"
 mkdir -p "$DIST"
