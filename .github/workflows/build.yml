@@ -74,7 +74,7 @@ jobs:
         run: |
           for f in ci-*.log; do
             [ -f "$f" ] || continue
-            python3 -c "import sys,re; L=[l.replace(chr(13),'') for l in open(sys.argv[1],errors='replace').read().splitlines()]; E=[l for l in L if re.search(r'(error|FAILED|fatal|not found|No such file|undefined reference|Permission denied)', l, re.I)][:40]; t=E+['----- last lines -----']+L[-40:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25') for l in t))" "$f"
+            python3 .github/ci-report.py "$f"
           done
 
       - uses: actions/upload-artifact@v4
@@ -129,7 +129,7 @@ jobs:
         run: |
           for f in ci-*.log; do
             [ -f "$f" ] || continue
-            python3 -c "import sys,re; L=[l.replace(chr(13),'') for l in open(sys.argv[1],errors='replace').read().splitlines()]; E=[l for l in L if re.search(r'(error|FAILED|fatal|not found|No such file|undefined reference|Permission denied)', l, re.I)][:40]; t=E+['----- last lines -----']+L[-40:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25') for l in t))" "$f"
+            python3 .github/ci-report.py "$f"
           done
 
       - uses: actions/upload-artifact@v4
@@ -188,7 +188,7 @@ jobs:
         run: |
           for f in ci-*.log; do
             [ -f "$f" ] || continue
-            python3 -c "import sys,re; L=[l.replace(chr(13),'') for l in open(sys.argv[1],errors='replace').read().splitlines()]; E=[l for l in L if re.search(r'(error|FAILED|fatal|not found|No such file|undefined reference|Permission denied)', l, re.I)][:40]; t=E+['----- last lines -----']+L[-40:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25') for l in t))" "$f"
+            python3 .github/ci-report.py "$f"
           done
 
   release:
