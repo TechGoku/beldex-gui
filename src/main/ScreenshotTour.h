@@ -157,6 +157,15 @@ public:
         const QString path = qEnvironmentVariable("BELDEX_GUI_TOUR_WALLET");
         const QString pw = qEnvironmentVariable("BELDEX_GUI_TOUR_PASSWORD");
         step(500, [this, path, pw] { m_mgr.openWallet(path, pw, 0); });
+        // BELDEX_GUI_TOUR_MINUTES=n: first wait (up to n minutes) for the wallet to finish syncing.
+        if (const int minutes = qEnvironmentVariableIntValue("BELDEX_GUI_TOUR_MINUTES"); minutes > 0)
+            step(5000, [this, minutes] {
+                waitSynced(0, minutes * 20, [this] {
+                    auto *w = m_mgr.wallet();
+                    check(w && w->synchronized() && w->blockHeight() + 2 >= w->daemonHeight(), "wallet syncs to the node's height");
+                    shot("reopen-synced");
+                });
+            });
         step(30000, [this] {
             auto *w = m_mgr.wallet();
             qInfo("tour: before close synced=%d wallet=%.0f daemon=%.0f", w && w->synchronized(), w ? w->blockHeight() : 0.0,
@@ -388,8 +397,78 @@ public:
         next();
     }
 
+    // BELDEX_GUI_TOUR=switch: one seed on two networks. Creates a mainnet wallet, switches it to testnet (a new
+    // copy that scans from BELDEX_GUI_TOUR_RESTORE_HEIGHT, or the node's height when unset), waits for it to sync
+    // through the testnet node, then switches back and forth and checks each side reopens with its own address.
+    void startSwitch()
+    {
+        const QString walletDir = QDir(m_out).filePath(QStringLiteral("wallets"));
+        QDir(walletDir).removeRecursively();
+        const int minutes = qEnvironmentVariableIntValue("BELDEX_GUI_TOUR_MINUTES") > 0 ? qEnvironmentVariableIntValue("BELDEX_GUI_TOUR_MINUTES") : 5;
+        step(500, [this, walletDir] { m_mgr.createWallet(walletDir, QStringLiteral("acct"), QStringLiteral("x"), 0); });
+        step(5000, [this] {
+            auto *w = m_mgr.wallet();
+            check(w && w->netType() == 0, "mainnet wallet open");
+            m_mainAddr = w ? w->address() : QString();
+            const QVariantMap sib = m_mgr.networkSibling(1);
+            check(sib.value("name").toString() == QLatin1String("acct-testnet") && !sib.value("exists").toBool(),
+                  "testnet copy will be acct-testnet (new)");
+            check(!m_mgr.switchNetwork(1, QStringLiteral("wrong"), 0).isEmpty() && m_mgr.wallet() == w,
+                  "wrong password is refused and the wallet stays open");
+            if (auto *app = m_engine.singletonInstance<QObject *>("BeldexGui", "App"))
+                QMetaObject::invokeMethod(app, "switchNetwork");
+        });
+        step(2500, [this] { shot("switch-dialog-new"); });
+        step(200, [this] {
+            const double h = qEnvironmentVariableIsSet("BELDEX_GUI_TOUR_RESTORE_HEIGHT")
+                                 ? qEnvironmentVariableIntValue("BELDEX_GUI_TOUR_RESTORE_HEIGHT") : 0;
+            const QString err = m_mgr.switchNetwork(1, QStringLiteral("x"), h);
+            check(err.isEmpty(), "switch to testnet started");
+            if (!err.isEmpty())
+                qInfo("tour:   %s", qPrintable(err));
+        });
+        step(8000, [this, minutes] {
+            auto *w = m_mgr.wallet();
+            check(w && w->netType() == 1, "testnet copy open");
+            check(w && m_mgr.addressValid(w->address(), 1) && w->address() != m_mainAddr, "testnet copy has a testnet address");
+            m_testAddr = w ? w->address() : QString();
+            shot("switch-testnet-syncing");
+            waitSynced(0, minutes * 20, [this] {
+                auto *w = m_mgr.wallet();
+                check(w && w->synchronized(), "testnet copy syncs through the testnet node");
+                check(w && w->blockHeight() + 2 >= w->daemonHeight() && w->daemonHeight() > 4000000, "testnet copy reaches the node's height");
+                if (w)
+                    qInfo("tour:   testnet wallet=%.0f daemon=%.0f node=%s", w->blockHeight(), w->daemonHeight(), qPrintable(w->daemonAddress()));
+                shot("switch-testnet-synced");
+                const QVariantMap sib = m_mgr.networkSibling(0);
+                check(sib.value("name").toString() == QLatin1String("acct") && sib.value("exists").toBool(), "mainnet side found as acct");
+                check(m_mgr.switchNetwork(0, QStringLiteral("x"), 0).isEmpty(), "switch back to mainnet started");
+            });
+        });
+        step(8000, [this] {
+            auto *w = m_mgr.wallet();
+            check(w && w->netType() == 0 && w->address() == m_mainAddr, "back on the original mainnet wallet");
+            const QVariantMap sib = m_mgr.networkSibling(1);
+            check(sib.value("name").toString() == QLatin1String("acct-testnet") && sib.value("exists").toBool(), "testnet copy is found again");
+            check(m_mgr.switchNetwork(1, QStringLiteral("x"), 0).isEmpty(), "switch to testnet again started");
+        });
+        step(8000, [this] {
+            auto *w = m_mgr.wallet();
+            check(w && w->netType() == 1 && w->address() == m_testAddr, "the same testnet copy reopens (no new wallet)");
+            check(!QFileInfo::exists(QDir(m_out).filePath(QStringLiteral("wallets/acct/acct-testnet-2.keys"))), "no duplicate copies");
+            shot("switch-testnet-reopened");
+            qInfo("tour: %s (%d failure%s)", m_failures ? "FAILED" : "OK", m_failures, m_failures == 1 ? "" : "s");
+            QCoreApplication::exit(m_failures ? 1 : 0);
+        });
+        next();
+    }
+
     void startReal()
     {
+        if (qEnvironmentVariable("BELDEX_GUI_TOUR") == QLatin1String("switch")) {
+            startSwitch();
+            return;
+        }
         if (qEnvironmentVariable("BELDEX_GUI_TOUR") == QLatin1String("testnet-local")) {
             startLocalNode(1);
             return;
@@ -537,5 +616,6 @@ private:
     QString m_seed;
     quint64 m_tip = 0, m_h = 0, m_h2 = 0;
     bool m_hold = false;
+    QString m_mainAddr, m_testAddr;
     quint64 m_scanHeightBeforeClose = 0;
 };

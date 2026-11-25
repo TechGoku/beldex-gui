@@ -66,6 +66,15 @@ public:
                                      double restoreHeight, const QString &address, const QString &viewKey,
                                      const QString &spendKey);
     Q_INVOKABLE void closeWallet();
+
+    // The same seed on another network: a wallet file is tied to one network, so the open wallet's copy for
+    // another network lives next to it (<name>-testnet, …; the copy of a testnet-born wallet on mainnet is
+    // <name>-mainnet). networkSibling() returns {name, path, exists} for the open wallet on `netType`.
+    Q_INVOKABLE QVariantMap networkSibling(int netType) const;
+    // Checks the password (the open wallet's, or the existing copy's), then closes the open wallet and opens its
+    // copy on `netType`, creating it from the seed if needed; a new copy scans from `restoreHeight`. Returns an
+    // error message without closing anything, or "" once the switch has started (then walletOpened/walletError).
+    Q_INVOKABLE QString switchNetwork(int netType, const QString &password, double restoreHeight);
     Q_INVOKABLE void clearNewWalletSeed();
 
     // Helpers

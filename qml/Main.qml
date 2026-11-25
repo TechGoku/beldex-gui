@@ -51,12 +51,14 @@ ApplicationWindow {
     ConfirmTxDialog { id: confirmDialog }
     PasswordDialog { id: passwordDialog }
     TxDetailsDialog { id: txDetails }
+    NetworkSwitchDialog { id: networkDialog }
 
     Connections {
         target: App
         function onToastRequested(text, tone) { toasts.show(text, tone) }
         function onPasswordRequested(message, callback) { passwordDialog.ask(message, callback) }
         function onTxDetailsRequested(tx) { txDetails.show(tx) }
+        function onNetworkSwitchRequested() { networkDialog.show() }
     }
 
     Connections {
@@ -69,6 +71,7 @@ ApplicationWindow {
             confirmDialog.close()
             txDetails.close()
             passwordDialog.close()
+            networkDialog.close()
         }
         function onWalletOpened() {
             App.settings.lastWalletPath = WalletManager.wallet.path

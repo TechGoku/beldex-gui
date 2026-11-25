@@ -59,7 +59,7 @@ BdxPage {
                                 BdxButton {
                                     required property string modelData
                                     compact: true
-                                    text: modelData.split(".")[0]
+                                    text: /^[0-9.]+:/.test(modelData) ? modelData : modelData.split(".")[0]   // IPs in full, hosts by name
                                     variant: nodeField.text === modelData ? "accent" : "ghost"
                                     onClicked: nodeField.text = modelData
                                 }
@@ -256,6 +256,11 @@ BdxPage {
                 Flow {
                     Layout.fillWidth: true
                     spacing: 8
+                    BdxButton {
+                        text: "Switch network"
+                        visible: WalletManager.showTestNetworks
+                        onClicked: App.switchNetwork()
+                    }
                     BdxButton {
                         text: "Show seed & keys"
                         variant: "accent"

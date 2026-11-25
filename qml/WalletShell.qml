@@ -64,15 +64,23 @@ ColumnLayout {
                 }
             }
             Item { Layout.fillWidth: true }
+            // Network badge; click to switch this wallet to another network.
             Rectangle {
                 implicitHeight: 24
                 implicitWidth: netText.implicitWidth + 22
-                color: "transparent"
+                color: netMouse.containsMouse ? "#121212" : "transparent"
                 border.color: shell.wallet.netType === 0 ? Theme.green : Theme.amber
+                MouseArea {
+                    id: netMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: App.switchNetwork()
+                }
                 Text {
                     id: netText
                     anchors.centerIn: parent
-                    text: "◈ " + shell.wallet.netName
+                    text: "◈ " + shell.wallet.netName + "  ▾"
                     color: shell.wallet.netType === 0 ? Theme.green : Theme.amber
                     font.family: Theme.display
                     font.pixelSize: 9

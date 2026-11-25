@@ -181,6 +181,90 @@ void WalletManager::restoreFromKeys(const QString &dir, const QString &name, con
             false);
 }
 
+static QString netSuffix(int net)
+{
+    return net == 1 ? QStringLiteral("testnet") : net == 2 ? QStringLiteral("devnet") : QStringLiteral("mainnet");
+}
+
+QVariantMap WalletManager::networkSibling(int net) const
+{
+    if (!m_wallet || net < 0 || net > 2)
+        return {};
+    const QFileInfo cur(m_wallet->path());
+    if (net == m_wallet->netType())
+        return {{"name", cur.fileName()}, {"path", cur.absoluteFilePath()}, {"exists", true}};
+    const QDir dir = cur.absoluteDir();
+    QString stem = cur.fileName();
+    for (int n : {0, 1, 2}) {
+        const QString sfx = QLatin1Char('-') + netSuffix(n);
+        if (stem.size() > sfx.size() && stem.endsWith(sfx)) {
+            stem.chop(sfx.size());
+            break;
+        }
+    }
+    // Which network a wallet file is on, from the address core writes next to it; -1 if unknown.
+    auto netOf = [this](const QString &path) {
+        QFile f(path + QStringLiteral(".address.txt"));
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            return -1;
+        const QString address = QString::fromUtf8(f.readLine()).trimmed();
+        for (int n : {0, 1, 2})
+            if (m_engine->addressValid(address, NetType(n)))
+                return n;
+        return -1;
+    };
+    const QString preferred = stem + QLatin1Char('-') + netSuffix(net);
+    for (const QString &name : {preferred, stem}) {
+        const QString path = dir.filePath(name);
+        if (name == cur.fileName() || !QFileInfo::exists(path + QStringLiteral(".keys")))
+            continue;
+        const int n = netOf(path);
+        if (n == net || (n < 0 && name == preferred))
+            return {{"name", name}, {"path", path}, {"exists", true}};
+    }
+    // New copy. <stem>-<net> is normally free; if a wallet on another network already has that name, number it.
+    QString name = preferred;
+    for (int i = 2; QFileInfo::exists(dir.filePath(name) + QStringLiteral(".keys")); ++i)
+        name = preferred + QLatin1Char('-') + QString::number(i);
+    return {{"name", name}, {"path", dir.filePath(name)}, {"exists", false}};
+}
+
+QString WalletManager::switchNetwork(int net, const QString &password, double height)
+{
+    if (!m_wallet || m_busy || net < 0 || net > 2 || net == m_wallet->netType())
+        return tr("Can't switch networks right now");
+    static const char *names[] = {"MAINNET", "TESTNET", "DEVNET"};
+    const QString netName = QString::fromLatin1(names[net]);
+    const QVariantMap sibling = networkSibling(net);
+    const QString path = sibling.value(QStringLiteral("path")).toString();
+
+    if (sibling.value(QStringLiteral("exists")).toBool()) {
+        // Check before closing anything: a wrong password must leave the current wallet open.
+        if (!m_engine->verifyPassword(path + QStringLiteral(".keys"), password))
+            return tr("Wrong password for %1").arg(sibling.value(QStringLiteral("name")).toString());
+        runOpen(tr("Switching to %1…").arg(netName),
+                [path, password, net](IEngine &e) { return e.openWallet(path, password, NetType(net)); }, false);
+        return {};
+    }
+
+    const QVariantMap secrets = m_wallet->secrets(password);
+    if (secrets.isEmpty())
+        return tr("Wrong password");
+    const QString seed = secrets.value(QStringLiteral("seed")).toString();
+    if (seed.trimmed().isEmpty())
+        return tr("This wallet has no seed (view-only or hardware wallet), so it can't be used on %1").arg(netName);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    const quint64 h = quint64(std::max(0.0, height));
+    runOpen(tr("Creating the %1 wallet…").arg(netName),
+            [path, password, seed, net, h](IEngine &e) {
+                auto w = e.restoreFromSeed(path, password, seed, NetType(net), h, {});
+                markRestored(w.get(), h);
+                return w;
+            },
+            false);
+    return {};
+}
+
 void WalletManager::closeWallet()
 {
     if (!m_wallet)

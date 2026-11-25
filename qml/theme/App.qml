@@ -21,6 +21,8 @@ QtObject {
     function toast(text, tone) { toastRequested(text, tone || "info") }
     function askPassword(message, callback) { passwordRequested(message, callback) }
     signal txDetailsRequested(var tx)
+    signal networkSwitchRequested()
+    function switchNetwork() { networkSwitchRequested() }
     function showTx(tx) { txDetailsRequested(tx) }
 
     // --- settings --------------------------------------------------------------------------------
@@ -30,7 +32,7 @@ QtObject {
         property int netType: 0
         property string lastWalletPath: ""
         property string mainnetNode: "publicnode1.rpcnode.stream:29095"
-        property string testnetNode: ""          // optional custom remote testnet node (none public today)
+        property string testnetNode: ""          // optional custom remote testnet node (Auto also tries the public one)
         property string devnetNode: ""
         // Per network: "auto" (public node if one answers, else a local beldexd), "remote" or "local".
         property string mainnetNodeMode: "auto"
@@ -49,7 +51,6 @@ QtObject {
     readonly property string walletDir: settings.walletDir.length > 0 ? settings.walletDir : WalletManager.defaultWalletDir
 
     // Public remote nodes (from the Beldex Electron wallet). publicnode* verified live on 2026-11-24.
-    // There is no public testnet RPC node (checked 2026-11-25), so testnet uses a local beldexd.
     readonly property var remoteNodes: [
         "publicnode1.rpcnode.stream:29095",
         "publicnode2.rpcnode.stream:29095",
@@ -57,6 +58,10 @@ QtObject {
         "publicnode4.rpcnode.stream:29095",
         "publicnode5.rpcnode.stream:29095",
         "mainnet.beldex.io:29095"   // listed by the Electron wallet; not answering RPC on 2026-11-24
+    ]
+    // Public testnet node (testnet, hard fork v22, verified 2026-11-25). Without an answer, Auto runs a local node.
+    readonly property var testnetRemoteNodes: [
+        "209.126.86.93:29091"
     ]
 
     readonly property var netNames: ["MAINNET", "TESTNET", "DEVNET"]
@@ -69,7 +74,7 @@ QtObject {
         else if (net === 2) settings.devnetNode = address
         else settings.mainnetNode = address
     }
-    function publicNodesFor(net) { return net === 0 ? remoteNodes : [] }
+    function publicNodesFor(net) { return net === 0 ? remoteNodes : net === 1 ? testnetRemoteNodes : [] }
     function nodeModeFor(net) {
         return net === 1 ? settings.testnetNodeMode : net === 2 ? settings.devnetNodeMode : settings.mainnetNodeMode
     }

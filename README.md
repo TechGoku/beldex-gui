@@ -88,14 +88,26 @@ Wallets always open on their own network: if the selector says mainnet but the f
 on the right network. Sending waits until a local node has caught up with the network. The node's log goes to
 `~/.local/share/Beldex/beldex-gui/beldexd-<network>.log`.
 
-The wizard offers mainnet, testnet and devnet. Every network defaults to Auto, so a network without a public node
-(testnet and devnet today) runs a local node. `BELDEX_GUI_MAINNET_ONLY=1` hides testnet and devnet.
+The wizard offers mainnet, testnet and devnet. Every network defaults to Auto: the configured node, then the public
+ones, then a local node. `BELDEX_GUI_MAINNET_ONLY=1` hides testnet and devnet.
 
-**Testnet status (checked 2026-11-25).** There's no public testnet RPC node, so Auto falls back to a local node. The testnet
-seed nodes built into core (`test1/test2.rpcnode.stream:29090`) refuse connections. The live testnet is on hard fork **v22**,
-but every public Beldex core branch stops at v20 for testnet, so a node built from public code can't follow it. To use
-testnet you need core with the testnet v21/v22 rules (`BELDEX_SOURCE_DIR`, or a branch in `external/beldex`) plus a reachable
-peer under Settings › Node › Testnet peers.
+| Network | Public node(s) |
+|---------|----------------|
+| Mainnet | `publicnode1`–`publicnode5.rpcnode.stream:29095` |
+| Testnet | `209.126.86.93:29091` (testnet, hard fork v22) |
+| Devnet  | none: runs a local node |
+
+**One wallet on several networks.** Click the network badge (◈ MAINNET ▾) in the status bar, or Settings › Wallet ›
+Switch network. A wallet file belongs to one network, so the app keeps the same seed as a separate wallet next to the
+original (`<name>-testnet`, `<name>-devnet`; a testnet-born wallet's mainnet copy is `<name>-mainnet`). The first
+switch creates that copy from the seed and asks where to start scanning: now (a new account on that network), the full
+history, or a block. Later switches just save one and open the other. A testnet copy's first sync downloads the whole
+testnet block list (core has no testnet checkpoints to skip it), which takes several minutes.
+
+**Testnet status (checked 2026-11-25).** Testnet is on hard fork **v22**. Wallets sync through the public node above.
+Running your own testnet node still needs core with the testnet v21/v22 rules: every public Beldex core branch stops at
+v20 for testnet (`BELDEX_SOURCE_DIR`, or a branch in `external/beldex`, plus a reachable peer under Settings › Node ›
+Testnet peers).
 
 ## Building
 
