@@ -80,7 +80,14 @@ linux)
     ARCH=$TOOL_ARCH "$TOOL" --appimage-extract-and-run --no-appstream "$APPDIR" "$OUT"
     ;;
 macos)
-    pack DragNDrop
+    # hdiutil on GitHub's macOS runners sometimes fails with "Resource busy" while a system service still holds
+    # the new image; it succeeds on a retry.
+    for attempt in 1 2 3; do
+        if pack DragNDrop; then break; fi
+        [ "$attempt" = 3 ] && { echo "==> .dmg creation failed 3 times" >&2; exit 1; }
+        echo "==> .dmg creation failed (attempt $attempt); retrying in 20 s"
+        sleep 20
+    done
     ;;
 windows)
     command -v makensis >/dev/null && pack NSIS || echo "==> makensis not found; skipping installer"

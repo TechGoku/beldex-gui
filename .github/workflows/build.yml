@@ -4,7 +4,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: ['**']   # every branch gets the full matrix, so changes are proven before they reach main
     tags: ['v*']
   pull_request:
   workflow_dispatch:
