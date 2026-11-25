@@ -182,7 +182,8 @@ install(TARGETS beldex-wallet-gui
 # Copies the Qt libraries, plugins and QML modules the app uses next to it (windeployqt on Windows,
 # macdeployqt on macOS, Qt's own deployer on Linux), so packages run without a system Qt.
 option(BELDEX_GUI_DEPLOY_QT "Bundle Qt into the install tree" ON)
-if(BELDEX_GUI_DEPLOY_QT)
+# Not for Windows built on Linux: Qt has no deploy tool for that case, so the block below bundles Qt instead.
+if(BELDEX_GUI_DEPLOY_QT AND NOT (WIN32 AND CMAKE_CROSSCOMPILING))
     qt_generate_deploy_qml_app_script(
         TARGET beldex-wallet-gui
         OUTPUT_SCRIPT BELDEX_GUI_DEPLOY_SCRIPT
