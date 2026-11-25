@@ -5,6 +5,11 @@ project(beldex-gui VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)          # Beldex core's public headers need C++17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(UNIX AND NOT APPLE)
+    # Packaged install directories as 0755 whatever the build machine's umask (CI's is 0002 -> 0775).
+    set(CMAKE_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+endif()
 
 option(BELDEX_GUI_MOCK "Use the simulated demo engine instead of linking Beldex core" OFF)
 set(BELDEX_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/beldex" CACHE PATH "Beldex core source tree")
@@ -297,8 +302,14 @@ set(CPACK_RPM_PACKAGE_AUTOREQ OFF)
 set(CPACK_RPM_PACKAGE_REQUIRES "xcb-util-cursor, libxkbcommon-x11, mesa-libEGL, fontconfig")
 if(UNIX AND NOT APPLE)
     set(CPACK_PACKAGING_INSTALL_PREFIX "/opt/beldex-wallet")
-    configure_file(packaging/linux/postinst.in ${CMAKE_CURRENT_BINARY_DIR}/postinst @ONLY)
-    configure_file(packaging/linux/prerm.in ${CMAKE_CURRENT_BINARY_DIR}/prerm @ONLY)
+    # dpkg refuses maintainer scripts that aren't executable ("bad permissions"), so give the generated scripts
+    # 0755 and have CPack keep exactly those modes (0644 for control and md5sums) in the control archive.
+    set(_bx_script_perms OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+    configure_file(packaging/linux/postinst.in ${CMAKE_CURRENT_BINARY_DIR}/postinst @ONLY
+                   FILE_PERMISSIONS ${_bx_script_perms})
+    configure_file(packaging/linux/prerm.in ${CMAKE_CURRENT_BINARY_DIR}/prerm @ONLY
+                   FILE_PERMISSIONS ${_bx_script_perms})
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_CURRENT_BINARY_DIR}/postinst;${CMAKE_CURRENT_BINARY_DIR}/prerm")
     set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_BINARY_DIR}/postinst")
     set(CPACK_RPM_PRE_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_BINARY_DIR}/prerm")
