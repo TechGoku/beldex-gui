@@ -78,8 +78,12 @@ export CMAKE_POLICY_VERSION_MINIMUM=3.5
 # macOS: core's static deps pass -isysroot ${CMAKE_OSX_SYSROOT}; when that is empty the next flag is taken as
 # the sysroot and the C++ headers vanish ("'cstddef' file not found"). Give it the SDK explicitly.
 SYSROOT_ARG=""
+JIT_ARG=""
 if [ "$TARGET" = native ] && [ "$(uname)" = "Darwin" ]; then
     SYSROOT_ARG="-DCMAKE_OSX_SYSROOT=$(xcrun --sdk macosx --show-sdk-path)"
+    # RandomX's arm64 JIT assembly lacks macOS's leading-underscore symbol names, so it can't link on Apple
+    # Silicon. Use RandomX's interpreter there (same results; core's release-full-static does the same).
+    [ "$(uname -m)" = "arm64" ] && JIT_ARG="-DRANDOMX_ENABLE_JIT=OFF"
 fi
 
 # Windows (MSYS2): Ninja runs the static-deps build steps through cmd.exe, where "autoreconf && ./configure"
@@ -103,6 +107,7 @@ cmake -S "$SRC" -B "$BUILD" ${GEN_ARG:+"$GEN_ARG"} \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     ${EXTRA_LIBS_ARG:+"$EXTRA_LIBS_ARG"} \
     ${SYSROOT_ARG:+"$SYSROOT_ARG"} \
+    ${JIT_ARG:+"$JIT_ARG"} \
     ${BELDEX_CMAKE_ARGS:-}
 
 echo "==> Building wallet_merged and beldexd with $JOBS jobs"
