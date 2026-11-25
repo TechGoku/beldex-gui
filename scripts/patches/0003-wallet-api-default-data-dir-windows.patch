@@ -1,0 +1,13 @@
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index bd4e7cc..2ba4480 100755
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3358,7 +3361,7 @@ bool WalletImpl::parse_uri(const std::string &uri, std::string &address, std::st
+ EXPORT
+ std::string WalletImpl::getDefaultDataDir() const
+ {
+- return tools::get_default_data_dir();
++ return tools::get_default_data_dir().u8string();  // fs::path has no implicit std::string conversion on Windows
+ }
+ 
+ EXPORT
