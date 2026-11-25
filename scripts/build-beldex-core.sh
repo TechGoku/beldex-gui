@@ -67,8 +67,22 @@ fi
 # bundled libuv still does. The env var also reaches the static-deps sub-builds; CMake 3 ignores it.
 export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
+# macOS: core's static deps pass -isysroot ${CMAKE_OSX_SYSROOT}; when that is empty the next flag is taken as
+# the sysroot and the C++ headers vanish ("'cstddef' file not found"). Give it the SDK explicitly.
+SYSROOT_ARG=""
+if [ "$(uname)" = "Darwin" ]; then
+    SYSROOT_ARG="-DCMAKE_OSX_SYSROOT=$(xcrun --sdk macosx --show-sdk-path)"
+fi
+
+# Windows (MSYS2): Ninja runs the static-deps build steps through cmd.exe, where "autoreconf && ./configure"
+# can't run. MSYS Makefiles run every step through sh, like on Linux and macOS.
+GEN_ARG=""
+case "$(uname -s)" in
+    MINGW*|MSYS*) GEN_ARG="-GMSYS Makefiles" ;;
+esac
+
 echo "==> Configuring $BUILD"
-cmake -S "$SRC" -B "$BUILD" \
+cmake -S "$SRC" -B "$BUILD" ${GEN_ARG:+"$GEN_ARG"} \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_STATIC_DEPS=ON \
     -DSTATIC=ON \
@@ -79,6 +93,7 @@ cmake -S "$SRC" -B "$BUILD" \
     -DWITH_SYSTEMD=OFF \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     ${EXTRA_LIBS_ARG:+"$EXTRA_LIBS_ARG"} \
+    ${SYSROOT_ARG:+"$SYSROOT_ARG"} \
     ${BELDEX_CMAKE_ARGS:-}
 
 echo "==> Building wallet_merged and beldexd with $JOBS jobs"

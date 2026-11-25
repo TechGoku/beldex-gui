@@ -20,7 +20,8 @@ jobs:
       matrix:
         include:
           - { arch: x86_64, runner: ubuntu-22.04,     qt_host: linux,       qt_arch: linux_gcc_64,    qt_dir: gcc_64 }
-          - { arch: arm64,  runner: ubuntu-22.04-arm, qt_host: linux_arm64, qt_arch: linux_gcc_arm64, qt_dir: gcc_arm64 }
+          # Qt's arm64 Linux build needs glibc 2.38+, so arm64 builds on Ubuntu 24.04.
+          - { arch: arm64,  runner: ubuntu-24.04-arm, qt_host: linux_arm64, qt_arch: linux_gcc_arm64, qt_dir: gcc_arm64 }
     # Ubuntu 22.04 (glibc 2.35) so the packages run on most current distributions.
     runs-on: ${{ matrix.runner }}
     steps:
@@ -68,7 +69,7 @@ jobs:
         run: |
           for f in ci-*.log; do
             [ -f "$f" ] || continue
-            python3 -c "import sys; t=open(sys.argv[1],errors='replace').read().splitlines()[-60:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25').replace(chr(13),'') for l in t))" "$f"
+            python3 -c "import sys,re; L=[l.replace(chr(13),'') for l in open(sys.argv[1],errors='replace').read().splitlines()]; E=[l for l in L if re.search(r'(error|FAILED|fatal|not found|No such file|undefined reference|Permission denied)', l, re.I)][:40]; t=E+['----- last lines -----']+L[-40:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25') for l in t))" "$f"
           done
 
       - uses: actions/upload-artifact@v4
@@ -123,7 +124,7 @@ jobs:
         run: |
           for f in ci-*.log; do
             [ -f "$f" ] || continue
-            python3 -c "import sys; t=open(sys.argv[1],errors='replace').read().splitlines()[-60:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25').replace(chr(13),'') for l in t))" "$f"
+            python3 -c "import sys,re; L=[l.replace(chr(13),'') for l in open(sys.argv[1],errors='replace').read().splitlines()]; E=[l for l in L if re.search(r'(error|FAILED|fatal|not found|No such file|undefined reference|Permission denied)', l, re.I)][:40]; t=E+['----- last lines -----']+L[-40:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25') for l in t))" "$f"
           done
 
       - uses: actions/upload-artifact@v4
@@ -182,7 +183,7 @@ jobs:
         run: |
           for f in ci-*.log; do
             [ -f "$f" ] || continue
-            python3 -c "import sys; t=open(sys.argv[1],errors='replace').read().splitlines()[-60:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25').replace(chr(13),'') for l in t))" "$f"
+            python3 -c "import sys,re; L=[l.replace(chr(13),'') for l in open(sys.argv[1],errors='replace').read().splitlines()]; E=[l for l in L if re.search(r'(error|FAILED|fatal|not found|No such file|undefined reference|Permission denied)', l, re.I)][:40]; t=E+['----- last lines -----']+L[-40:]; print('::error title=' + sys.argv[1] + '::' + '%0A'.join(l.replace('%','%25') for l in t))" "$f"
           done
 
       - uses: actions/upload-artifact@v4
