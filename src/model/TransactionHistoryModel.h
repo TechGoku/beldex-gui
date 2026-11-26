@@ -14,7 +14,8 @@ class TransactionHistoryModel : public QAbstractListModel {
     QML_ELEMENT
     QML_UNCREATABLE("Owned by Wallet")
 
-    Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)   // all | in | out | reward | stake | bns | pending
+    Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)   // all | in | out | reward | stake | bns | token | pending
+    Q_PROPERTY(bool hasTokens READ hasTokens NOTIFY countChanged)
     Q_PROPERTY(QString search READ search WRITE setSearch NOTIFY searchChanged)   // matches hash, note, address, payment id
     Q_PROPERTY(int count READ rowCount NOTIFY countChanged)
     Q_PROPERTY(int totalCount READ totalCount NOTIFY countChanged)
@@ -37,6 +38,13 @@ public:
         DestinationsRole,
         AccountRole,
         UnlockTimeRole,
+        TokenIdRole,
+        UnitRole,       // "BDX" or the token's ticker
+    };
+
+    struct TokenMeta {
+        QString ticker;
+        int decimals = -1;  // -1: unknown (registry not loaded yet)
     };
 
     explicit TransactionHistoryModel(QObject *parent = nullptr);
@@ -46,6 +54,9 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void setTransactions(std::vector<bdx::TxRecord> txs);
+    void setTokenMeta(QHash<QString, TokenMeta> meta);
+    QStringList tokenIds() const;   // tokens that appear in the history
+    bool hasTokens() const { return m_hasTokens; }
     const std::vector<bdx::TxRecord> &all() const { return m_all; }
 
     QString filter() const { return m_filter; }
@@ -58,7 +69,9 @@ public:
     Q_INVOKABLE QString exportCsv() const;
 
     static QString kindName(const bdx::TxRecord &t);
-    static QVariantMap toMap(const bdx::TxRecord &t);
+    QVariantMap toMap(const bdx::TxRecord &t) const;
+    QString unit(const bdx::TxRecord &t) const;
+    QString amountText(const bdx::TxRecord &t, int maxDecimals) const;
 
 signals:
     void filterChanged();
@@ -73,4 +86,6 @@ private:
     std::vector<int> m_view;  // indices into m_all
     QString m_filter = QStringLiteral("all");
     QString m_search;
+    QHash<QString, TokenMeta> m_tokenMeta;
+    bool m_hasTokens = false;
 };

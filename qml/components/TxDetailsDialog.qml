@@ -20,13 +20,17 @@ BdxDialog {
         spacing: 10
         KindBadge { kind: root.tx.kind || "in"; pending: !!root.tx.pending }
         Mono {
-            text: root.tx.amountFull !== undefined ? (root.tx.incoming ? "+" : "−") + root.tx.amountFull + " BDX" : ""
+            text: root.tx.amountFull === undefined ? ""
+                : root.tx.kind === "token-update" ? ""
+                : (root.tx.incoming || root.tx.kind === "token-register" || root.tx.kind === "token-mint" ? "+" : "−")
+                  + root.tx.amountFull + " " + (root.tx.unit || "BDX")
             color: root.tx.incoming ? Theme.green : Theme.text
             font.pixelSize: 18
             font.bold: true
         }
     }
     CopyField { label: "Transaction ID"; value: root.tx.hash || "" }
+    CopyField { label: "Token ID"; value: root.tx.tokenId || ""; visible: !!root.tx.tokenId }
     KeyValue { key: "Date"; value: root.tx.dateText || "" }
     KeyValue { key: "Block height"; value: root.tx.pending ? "in mempool" : App.fmtHeight(root.tx.height || 0) }
     KeyValue { key: "Confirmations"; value: String(root.tx.confirmations || 0); visible: !root.tx.pending }

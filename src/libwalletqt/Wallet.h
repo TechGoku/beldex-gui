@@ -11,12 +11,15 @@
 #include <QThreadPool>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QSet>
 #include <QVariant>
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 class PendingTransaction;
+class TokenRegistry;
 class WalletListenerProxy;
 
 // QML-facing wrapper around one open bdx::IWallet.
@@ -65,6 +68,13 @@ class Wallet : public QObject {
     Q_PROPERTY(QVariantList addressBook READ addressBook NOTIFY addressBookChanged)
     Q_PROPERTY(QVariantList stakes READ stakes NOTIFY stakesChanged)
     Q_PROPERTY(QVariantList bnsRecords READ bnsRecords NOTIFY bnsChanged)
+
+    // privacy tokens: testnet only (mainnet has no tokens yet)
+    Q_PROPERTY(bool tokensEnabled READ tokensEnabled CONSTANT)
+    Q_PROPERTY(QString spendPublicKey READ spendPublicKey CONSTANT)          // token ownership is by this key
+    Q_PROPERTY(TokenRegistry *tokenRegistry READ tokenRegistry CONSTANT)
+    Q_PROPERTY(QVariantList tokens READ tokens NOTIFY tokensChanged)          // balances of the current account
+    Q_PROPERTY(QVariantList ownedTokens READ ownedTokens NOTIFY ownedTokensChanged)
 
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString busyText READ busyText NOTIFY busyChanged)
@@ -115,6 +125,12 @@ public:
     QVariantList stakes() const { return m_stakes; }
     QVariantList bnsRecords() const { return m_bns; }
 
+    bool tokensEnabled() const { return m_net == bdx::NetType::Testnet; }
+    QString spendPublicKey() const { return m_spendKey; }
+    TokenRegistry *tokenRegistry() const { return m_registry; }
+    QVariantList tokens() const { return m_tokens; }
+    QVariantList ownedTokens() const { return m_ownedTokens; }
+
     bool busy() const { return m_busyCount > 0; }
     QString busyText() const { return m_busyText; }
 
@@ -136,8 +152,11 @@ public:
 
     // --- send ------------------------------------------------------------------------------
     // destinations: [{address: "bx…", amount: "12.5"}]. Emits transactionCreated(tx) or error(msg).
-    Q_INVOKABLE void createTransaction(const QVariantList &destinations, bool flash);
+    // tokenId: send that privacy token instead of BDX (amounts in the token's units).
+    Q_INVOKABLE void createTransaction(const QVariantList &destinations, bool flash, const QString &tokenId = QString());
     Q_INVOKABLE void createSweepAll(bool flash);
+    // what: a token id, "bdx" or "all" (BDX and every token); address empty = this account.
+    Q_INVOKABLE void sweep(const QString &what, const QString &address, bool flash);
     Q_INVOKABLE void estimateFee(int recipients, bool flash);   // emits feeEstimated
     Q_INVOKABLE void commitTransaction(PendingTransaction *tx);  // emits transactionCommitted
     Q_INVOKABLE void discardTransaction(PendingTransaction *tx);
@@ -157,6 +176,19 @@ public:
     Q_INVOKABLE void buyBns(const QVariantMap &fields);
     Q_INVOKABLE void renewBns(const QString &name, const QString &years);
     Q_INVOKABLE void updateBns(const QVariantMap &fields);
+
+    // --- privacy tokens (testnet) ----------------------------------------------------------
+    // fields: ticker, fullName, maxSupply, supply, decimals, metaInfo (supplies in whole tokens, e.g. "1000000.5")
+    Q_INVOKABLE void registerToken(const QVariantMap &fields);
+    Q_INVOKABLE void mintToken(const QString &tokenId, const QString &amount);
+    Q_INVOKABLE void burnToken(const QString &tokenId, const QString &amount);
+    // newOwner: address that takes over the token (empty keeps this wallet)
+    Q_INVOKABLE void updateToken(const QString &tokenId, const QString &metaInfo, const QString &newOwner);
+    Q_INVOKABLE QVariantMap tokenMeta(const QString &tokenId) const;   // {ticker, fullName, decimals} (decimals -1 = unknown)
+    Q_INVOKABLE bool tokenAmountValid(const QString &amount, const QString &tokenId) const;
+    // Owner filter for the registry: an address becomes its public spend key; a 64-hex key passes through.
+    Q_INVOKABLE QString ownerKeyOf(const QString &addressOrKey) const;
+    Q_INVOKABLE void refreshTokens();   // registry (from the node) and balances
 
     // --- tools / secrets (password-gated) --------------------------------------------------
     Q_INVOKABLE bool checkPassword(const QString &password);
@@ -179,6 +211,8 @@ signals:
     void addressBookChanged();
     void stakesChanged();
     void bnsChanged();
+    void tokensChanged();
+    void ownedTokensChanged();
     void busyChanged();
 
     void moneyReceived(const QString &txid, const QString &amount);
@@ -217,7 +251,16 @@ private:
     void reloadStakes();
     void reloadBns();
     void emitCreated(std::unique_ptr<bdx::IPendingTx> tx, const QString &kind, const QStringList &dests, bool flash,
-                     const QString &note);
+                     const QString &note, const QString &tokenId = {}, const QString &unit = {},
+                     const QString &amountText = {});
+    void applyTokenBalances(const std::vector<bdx::TokenBalance> &balances);
+    void updateTokenMeta();
+    void loadDemoTokens();
+    void syncTokenRegistry();
+    std::optional<int> tokenDecimals(const QString &tokenId) const;
+    void tokenOp(const QString &busy, std::function<std::unique_ptr<bdx::IPendingTx>(bdx::IWallet &, QString *)> work,
+                 const QString &kind, const QString &tokenId, const QStringList &dests, const QString &unit,
+                 const QString &amountText, const QString &note);
 
     bdx::IEngine *m_engine;
     std::unique_ptr<bdx::IWallet> m_w;
@@ -239,6 +282,11 @@ private:
     int m_busyCount = 0;
 
     QVariantList m_accounts, m_subaddresses, m_addressBook, m_stakes, m_bns;
+    QString m_spendKey;
+    TokenRegistry *m_registry = nullptr;
+    std::vector<bdx::TokenBalance> m_tokenBalances;
+    QVariantList m_tokens, m_ownedTokens;
+    QSet<QString> m_metaRequested;   // token ids already asked of the node for their ticker/decimals
     quint64 m_balance = 0, m_unlocked = 0, m_totalBalance = 0, m_staked = 0;
     bdx::ConnStatus m_conn = bdx::ConnStatus::Disconnected;
     quint64 m_height = 0, m_daemonHeight = 0, m_restoreHeight = 0, m_syncStartHeight = 0;

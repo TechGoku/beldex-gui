@@ -23,13 +23,14 @@ BdxPage {
             model: [
                 { value: "all", label: "All" }, { value: "in", label: "In" }, { value: "out", label: "Out" },
                 { value: "reward", label: "Rewards" }, { value: "stake", label: "Stakes" },
-                { value: "bns", label: "BNS" }, { value: "pending", label: "Pending" }
-            ]
+                { value: "bns", label: "BNS" }
+            ].concat(page.w && page.w.tokensEnabled ? [{ value: "token", label: "Tokens" }] : [])
+             .concat([{ value: "pending", label: "Pending" }])
             onPicked: v => page.h.filter = v
         }
         Item { Layout.fillWidth: true }
         BdxTextField {
-            placeholderText: "Search tx id, note, address or height"
+            placeholderText: page.w && page.w.tokensEnabled ? "Search tx id, note, address, height or ticker" : "Search tx id, note, address or height"
             Layout.preferredWidth: 380
             Layout.fillWidth: false
             field.onTextChanged: page.h.search = field.text
@@ -44,6 +45,7 @@ BdxPage {
             Layout.fillWidth: true
             listHeight: Math.max(440, page.height - 340)
             model: page.h
+            showUnits: page.w && page.w.tokensEnabled
             emptyText: page.h && page.h.totalCount > 0 ? "Nothing matches this filter" : "No transactions yet"
             onActivated: tx => App.showTx(tx)
         }

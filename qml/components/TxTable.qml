@@ -10,6 +10,7 @@ ColumnLayout {
     property bool scrollable: true
     property string emptyText: "No transactions yet"
     property int listHeight: 300
+    property bool showUnits: false   // testnet: rows may be privacy tokens, so every amount names its unit
     signal activated(var tx)
     spacing: 0
 
@@ -17,7 +18,7 @@ ColumnLayout {
         { key: "date", title: "Date", w: 150 },
         { key: "type", title: "Type", w: 120 },
         { key: "hash", title: "Transaction hash", w: -1 },
-        { key: "amount", title: "Amount (BDX)", w: 170 },
+        { key: "amount", title: root.showUnits ? "Amount" : "Amount (BDX)", w: root.showUnits ? 230 : 170 },
         { key: "conf", title: "Height", w: 110 }
     ]
 
@@ -85,12 +86,16 @@ ColumnLayout {
                     Layout.fillWidth: true
                 }
                 Mono {
-                    readonly property bool zero: rowItem.tx.amount === "0.00"
-                    text: zero ? "—" : (rowItem.tx.incoming ? "+" : "−") + rowItem.tx.amount
+                    readonly property bool zero: rowItem.tx.amount === "0.00" || rowItem.tx.amount === "0"
+                    readonly property string unitText: root.showUnits && rowItem.tx.unit ? " " + rowItem.tx.unit : ""
+                    readonly property string sign: rowItem.tx.kind === "token-register" || rowItem.tx.kind === "token-mint" ? "+"
+                                                 : rowItem.tx.incoming ? "+" : "−"
+                    text: zero ? "—" : sign + rowItem.tx.amount + unitText
+                    elide: Text.ElideLeft
                     color: zero ? Theme.textFaint : rowItem.tx.incoming ? Theme.green : Theme.text
                     font.bold: true
                     horizontalAlignment: Text.AlignRight
-                    Layout.preferredWidth: 170
+                    Layout.preferredWidth: root.showUnits ? 230 : 170
                 }
                 Mono {
                     text: rowItem.tx.pending ? "mempool" : Number(rowItem.tx.height).toFixed(0)

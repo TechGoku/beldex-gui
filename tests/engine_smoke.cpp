@@ -8,6 +8,7 @@
 // the network height. Exits non-zero on the first failure.
 
 #include "engine/WalletEngine.h"
+#include "libwalletqt/Amount.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -15,6 +16,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 
+#include <algorithm>
 #include <cstdio>
 
 static int failures = 0;
@@ -96,12 +98,31 @@ int main(int argc, char **argv)
         }
         auto right = engine->openWallet(tpath, pw, bdx::NetType::Testnet);
         CHECK(right && right->address(0, 0) == taddr, "testnet wallet opens as testnet");
-        if (right)
+        if (right) {
+            // privacy-token reads on a wallet that holds none (no node: nothing to ask)
+            CHECK(right->tokenBalances(0).empty(), "new testnet wallet has no token balances");
+            const auto txs = right->history();
+            CHECK(std::all_of(txs.begin(), txs.end(), [](const bdx::TxRecord &t) { return t.tokenId.isEmpty(); }),
+                  "history reads with token ids");
             engine->closeWallet(std::move(right), false);
+        }
     }
 
     CHECK(engine->amountFromString(QStringLiteral("1.5")).value_or(0) == 1500000000ULL, "amountFromString 1.5 BDX");
     CHECK(engine->masterNodeKeyValid(QString(64, QLatin1Char('a'))), "master node key validator");
+
+    // privacy-token amounts use each token's own decimals (0..18)
+    CHECK(bdx::parseUnits(QStringLiteral("123.45"), 4).value_or(0) == 1234500ULL, "parseUnits 123.45 @4");
+    CHECK(bdx::parseUnits(QStringLiteral("7"), 0).value_or(0) == 7ULL, "parseUnits 7 @0");
+    CHECK(!bdx::parseUnits(QStringLiteral("1.234"), 2), "parseUnits rejects extra decimals");
+    CHECK(bdx::parseUnits(QStringLiteral("1.230"), 2).value_or(0) == 123ULL, "parseUnits ignores trailing zeros");
+    CHECK(!bdx::parseUnits(QStringLiteral("18446744073709551616"), 0), "parseUnits rejects 2^64");
+    CHECK(bdx::parseUnits(QStringLiteral("18.446744073709551615"), 18).value_or(0) == 18446744073709551615ULL, "parseUnits max @18");
+    CHECK(!bdx::parseUnits(QStringLiteral("19"), 18), "parseUnits rejects overflow @18");
+    CHECK(bdx::formatUnits(1234500, 4) == QStringLiteral("123.45"), "formatUnits 123.45");
+    CHECK(bdx::formatUnits(100000000000ULL, 6, 6) == QStringLiteral("100,000.00"), "formatUnits keeps 2 decimals");
+    CHECK(bdx::formatUnits(42, 0) == QStringLiteral("42"), "formatUnits 0 decimals");
+    CHECK(bdx::formatUnits(5, 18, 18) == QStringLiteral("0.000000000000000005"), "formatUnits 18 decimals");
 
     if (!node.isEmpty()) {
         auto w = engine->openWallet(path, pw, bdx::NetType::Mainnet);

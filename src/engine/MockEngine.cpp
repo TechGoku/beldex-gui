@@ -14,15 +14,18 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QMutex>
 #include <QRandomGenerator>
 #include <QRegularExpression>
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 
 namespace bdx {
 namespace {
@@ -146,6 +149,8 @@ public:
             generateHistory();
         for (const auto &v : doc.value("sent").toArray())
             m_txs.push_back(txFromJson(v.toObject()));
+        if (m_net == NetType::Testnet && doc.value("demoHistory").toBool())
+            seedDemoTokens();
     }
 
     // -- identity -----------------------------------------------------------------------------
@@ -357,8 +362,10 @@ public:
 
     // -- sending ------------------------------------------------------------------------------
     std::unique_ptr<IPendingTx> createTransaction(const QStringList &dests, const QList<quint64> &amounts,
-                                                  uint32_t priority, quint32 account) override
+                                                  uint32_t priority, quint32 account, const QString &tokenId) override
     {
+        if (!tokenId.isEmpty())
+            return tokenTransfer(dests, amounts, priority, account, tokenId);
         if (!m_connected)
             return std::make_unique<MockPendingTx>(QStringLiteral("No connection to daemon"));
         if (!synchronized())
@@ -385,6 +392,130 @@ public:
             return std::make_unique<MockPendingTx>(QStringLiteral("Nothing to sweep"));
         return outgoing(bal - fee, fee, account, {m_primary}, TxRecord::Kind::Transfer);
     }
+    std::unique_ptr<IPendingTx> sweep(const QString &what, const QString &address, uint32_t priority,
+                                      quint32 account) override
+    {
+        if (!address.isEmpty() && !addrOk(address))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Invalid destination address"));
+        const bool away = !address.isEmpty() && address != m_primary;
+        const QString to = address.isEmpty() ? m_primary : address;
+        const quint64 fee = estimateFee(priority, 1);
+        if (what == QLatin1String("bdx") || what == QLatin1String("all")) {
+            const quint64 bal = unlockedBalance(account);
+            if (bal <= fee)
+                return std::make_unique<MockPendingTx>(QStringLiteral("Nothing to sweep"));
+            auto tx = outgoing(away ? bal - fee : 0, fee, account, {to}, TxRecord::Kind::Transfer);
+            if (what == QLatin1String("all") && away) {
+                auto *p = static_cast<MockPendingTx *>(tx.get());
+                auto inner = std::move(p->m_commit);
+                p->m_commit = [this, inner, account](MockPendingTx &t, bool flash) {
+                    for (auto it = m_tokenBal.begin(); it != m_tokenBal.end();)
+                        it = it.key().first == account ? m_tokenBal.erase(it) : std::next(it);
+                    return inner(t, flash);
+                };
+            }
+            return tx;
+        }
+        const quint64 have = m_tokenBal.value({account, what});
+        if (!have)
+            return std::make_unique<MockPendingTx>(QStringLiteral("No unlocked balance of that token"));
+        if (fee > unlockedBalance(account))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Not enough BDX for the fee"));
+        return tokenTx(have, fee, account, {to}, TxRecord::Kind::Transfer, what, [this, account, what, away] {
+            if (away)
+                m_tokenBal.remove({account, what});
+        });
+    }
+
+    // -- privacy tokens (demo: in memory only) -----------------------------------------------
+    std::vector<TokenBalance> tokenBalances(quint32 account) override
+    {
+        std::vector<TokenBalance> out;
+        for (auto it = m_tokenBal.begin(); it != m_tokenBal.end(); ++it)
+            if (it.key().first == account && it.value() > 0) {
+                const TokenInfo &t = m_tokens[it.key().second];
+                out.push_back({t.tokenId, t.ticker, it.value(), it.value(), t.decimals});
+            }
+        return out;
+    }
+    std::vector<TokenInfo> knownTokens() override
+    {
+        std::vector<TokenInfo> out;
+        for (const auto &t : m_tokens)
+            out.push_back(t);
+        return out;
+    }
+    std::unique_ptr<IPendingTx> registerToken(const QString &json, QString *tokenId, uint32_t priority,
+                                              quint32 account) override
+    {
+        const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+        TokenInfo t;
+        t.ticker = o.value("ticker").toString();
+        t.fullName = o.value("full_name").toString();
+        t.maxSupply = quint64(o.value("total_max_supply").toDouble());
+        t.supply = quint64(o.value("current_supply").toDouble());
+        t.decimals = o.value("decimal_point").toInt();
+        t.metaInfo = o.value("meta_info").toString();
+        t.owner = publicSpendKey();
+        if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9]{1,14}$")).match(t.ticker).hasMatch())
+            return std::make_unique<MockPendingTx>(QStringLiteral("Invalid token descriptor JSON: ticker is invalid; expected 1-14 ASCII alphanumeric characters"));
+        if (t.fullName.isEmpty() || t.maxSupply == 0 || t.supply > t.maxSupply)
+            return std::make_unique<MockPendingTx>(QStringLiteral("Invalid token descriptor JSON: check name and supply"));
+        const quint64 fee = estimateFee(priority, 1);
+        if (fee > unlockedBalance(account))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Not enough BDX for the fee"));
+        t.tokenId = randomHex(m_rng, 32);
+        if (tokenId)
+            *tokenId = t.tokenId;
+        return tokenTx(t.supply, fee, account, {m_primary}, TxRecord::Kind::TokenRegister, t.tokenId, [this, t, account] {
+            m_tokens.insert(t.tokenId, t);
+            if (t.supply)
+                m_tokenBal[{account, t.tokenId}] += t.supply;
+        });
+    }
+    std::unique_ptr<IPendingTx> mintToken(const QString &id, quint64 amount, uint32_t priority, quint32 account) override
+    {
+        if (auto err = ownedCheck(id); !err.isEmpty())
+            return std::make_unique<MockPendingTx>(err);
+        const TokenInfo &t = m_tokens[id];
+        if (amount == 0 || amount > t.maxSupply - t.supply)
+            return std::make_unique<MockPendingTx>(QStringLiteral("Mint amount exceeds the remaining supply"));
+        return tokenTx(amount, estimateFee(priority, 1), account, {m_primary}, TxRecord::Kind::TokenMint, id,
+                       [this, id, amount, account] {
+                           m_tokens[id].supply += amount;
+                           m_tokenBal[{account, id}] += amount;
+                       });
+    }
+    std::unique_ptr<IPendingTx> burnToken(const QString &id, quint64 amount, uint32_t priority, quint32 account) override
+    {
+        if (!m_tokens.contains(id))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Invalid token id"));
+        if (amount == 0 || amount > m_tokenBal.value({account, id}))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Not enough of that token to burn"));
+        return tokenTx(amount, estimateFee(priority, 1), account, {}, TxRecord::Kind::TokenBurn, id,
+                       [this, id, amount, account] {
+                           m_tokens[id].supply -= amount;
+                           m_tokenBal[{account, id}] -= amount;
+                       });
+    }
+    std::unique_ptr<IPendingTx> updateToken(const QString &id, const QString &json, uint32_t priority) override
+    {
+        if (auto err = ownedCheck(id); !err.isEmpty())
+            return std::make_unique<MockPendingTx>(err);
+        const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+        const QString meta = o.contains("meta_info") ? o.value("meta_info").toString() : m_tokens[id].metaInfo;
+        const QString owner = o.value("owner").toString();
+        if (meta == m_tokens[id].metaInfo && owner.isEmpty())
+            return std::make_unique<MockPendingTx>(QStringLiteral("update_token: meta_info and owner are unchanged, nothing to update"));
+        if (!owner.isEmpty() && !addrOk(owner))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Invalid token descriptor JSON: owner must be a hex-encoded public key or valid address"));
+        return tokenTx(0, estimateFee(priority, 1), 0, {}, TxRecord::Kind::TokenUpdate, id, [this, id, meta, owner] {
+            m_tokens[id].metaInfo = meta;
+            if (!owner.isEmpty() && owner != m_primary)
+                m_tokens[id].owner = randomHex(m_rng, 32);  // demo: some other wallet's spend key
+        });
+    }
+
     quint64 estimateFee(uint32_t priority, quint32 recipients) const override
     {
         // base fee 0.0001 BDX / output + 0.006666 BDX / kB (explorer "network parameters"), flash x3
@@ -590,7 +721,7 @@ private:
                 if (!unlockedOnly || unlocked)
                     bal += qint64(r.amount);
             } else {
-                bal -= qint64(r.amount + r.fee);
+                bal -= qint64((r.tokenId.isEmpty() ? r.amount : 0) + r.fee);  // token amounts aren't BDX
             }
         }
         if (account == 0 && unlockedOnly)
@@ -622,6 +753,97 @@ private:
                 m_listener->moneySpent(t.m_txid, t.m_amount);
             return true;
         });
+    }
+
+    QString ownedCheck(const QString &id) const
+    {
+        if (!m_tokens.contains(id))
+            return QStringLiteral("Invalid token id");
+        if (m_tokens.value(id).owner != publicSpendKey())
+            return QStringLiteral("This wallet does not own the token: ") + id;
+        return {};
+    }
+
+    // A token operation: BDX pays the fee, `apply` changes token state once broadcast.
+    std::unique_ptr<IPendingTx> tokenTx(quint64 amount, quint64 fee, quint32 account, QStringList dests,
+                                        TxRecord::Kind kind, QString tokenId, std::function<void()> apply)
+    {
+        return std::make_unique<MockPendingTx>(amount, fee, [=](MockPendingTx &t, bool flash) {
+            apply();
+            MockTx tx;  // not saved: demo token state lives in memory only
+            tx.rec.hash = t.m_txid;
+            tx.rec.pending = !flash;
+            tx.rec.kind = kind;
+            tx.rec.amount = amount;
+            tx.rec.fee = fee;
+            tx.rec.blockHeight = daemonHeight();
+            tx.rec.timestamp = QDateTime::currentDateTime();
+            tx.rec.account = account;
+            tx.rec.destinations = dests;
+            tx.rec.tokenId = tokenId;
+            m_txs.push_back(tx);
+            if (m_listener)
+                m_listener->moneySpent(t.m_txid, fee);
+            return true;
+        });
+    }
+
+    std::unique_ptr<IPendingTx> tokenTransfer(const QStringList &dests, const QList<quint64> &amounts, uint32_t priority,
+                                              quint32 account, const QString &id)
+    {
+        if (!m_tokens.contains(id))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Invalid token id"));
+        quint64 total = 0;
+        for (auto a : amounts)
+            total += a;
+        for (const auto &d : dests)
+            if (!addrOk(d))
+                return std::make_unique<MockPendingTx>(QStringLiteral("Invalid destination address: %1").arg(d.left(12) + QStringLiteral("…")));
+        if (total == 0 || total > m_tokenBal.value({account, id}))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Not enough unlocked %1").arg(m_tokens[id].ticker));
+        const quint64 fee = estimateFee(priority, quint32(dests.size()));
+        if (fee > unlockedBalance(account))
+            return std::make_unique<MockPendingTx>(QStringLiteral("Not enough BDX for the fee"));
+        quint64 away = 0;  // sending to ourselves keeps the tokens
+        for (int i = 0; i < dests.size(); ++i)
+            if (dests[i] != m_primary)
+                away += amounts[i];
+        return tokenTx(total, fee, account, dests, TxRecord::Kind::Transfer, id, [this, account, id, away] {
+            m_tokenBal[{account, id}] -= away;
+        });
+    }
+
+    void seedDemoTokens()
+    {
+        QRandomGenerator rng(qHash(m_seed) ^ 0x70C3);
+        const quint64 m6 = 1000000;
+        TokenInfo own{randomHex(rng, 32), QStringLiteral("BLINK"), QStringLiteral("Blink Rewards"), publicSpendKey(),
+                      1000000 * m6, 250000 * m6, 6, QStringLiteral("Loyalty points for the demo store")};
+        TokenInfo other{randomHex(rng, 32), QStringLiteral("TUSD"), QStringLiteral("Test Dollar"), randomHex(rng, 32),
+                        50000000ULL * 100, 12000000ULL * 100, 2, QString()};
+        m_tokens.insert(own.tokenId, own);
+        m_tokens.insert(other.tokenId, other);
+        m_tokenBal[{0, own.tokenId}] = 180000 * m6;
+        m_tokenBal[{0, other.tokenId}] = 1250 * 100;
+        const quint64 top = networkHeightNow();
+        auto rec = [&](quint64 h, bool in, TxRecord::Kind kind, quint64 amount, const QString &id) {
+            MockTx t;
+            t.rec.hash = randomHex(rng, 32);
+            t.rec.incoming = in;
+            t.rec.kind = kind;
+            t.rec.amount = amount;
+            t.rec.fee = in ? 0 : 41000000;
+            t.rec.blockHeight = h;
+            t.rec.timestamp = timeOfHeight(h);
+            t.rec.confirmations = top - h;
+            t.rec.tokenId = id;
+            if (!in)
+                t.rec.destinations << m_primary;
+            m_txs.push_back(t);
+        };
+        rec(top - 2880 * 9, false, TxRecord::Kind::TokenRegister, 250000 * m6, own.tokenId);
+        rec(top - 2880 * 4, false, TxRecord::Kind::Transfer, 70000 * m6, own.tokenId);
+        rec(top - 2880 * 2, true, TxRecord::Kind::Transfer, 1250 * 100, other.tokenId);
     }
 
     void generateHistory()
@@ -723,6 +945,8 @@ private:
     std::vector<StakeRecord> m_stakes;
     std::vector<BnsRecord> m_bns;
     quint64 m_lockedByStake = 0;
+    QHash<QString, TokenInfo> m_tokens;                    // demo token registry
+    QMap<std::pair<quint32, QString>, quint64> m_tokenBal;  // (account, token id) -> balance
     std::atomic<bool> m_connected{false}, m_refreshing{false};
     QElapsedTimer m_syncClock;
     IWalletListener *m_listener = nullptr;

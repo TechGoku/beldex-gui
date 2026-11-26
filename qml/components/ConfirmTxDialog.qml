@@ -7,11 +7,14 @@ BdxDialog {
     id: root
     property var tx: null
     property bool committing: false
+    readonly property bool bdx: !tx || tx.unit === "BDX"
 
     title: !tx ? "" : {
         "transfer": "Confirm transaction", "sweep": "Confirm sweep", "stake": "Confirm stake",
         "unlock": "Request stake unlock", "bns-buy": "Confirm BNS purchase",
-        "bns-renew": "Confirm BNS renewal", "bns-update": "Confirm BNS update"
+        "bns-renew": "Confirm BNS renewal", "bns-update": "Confirm BNS update",
+        "token-register": "Confirm token registration", "token-mint": "Confirm mint",
+        "token-burn": "Confirm burn", "token-update": "Confirm token update"
     }[tx.kind] || "Confirm"
 
     function show(t) { tx = t; committing = false; open() }
@@ -23,20 +26,23 @@ BdxDialog {
     }
 
     KeyValue {
-        key: root.tx && root.tx.kind === "stake" ? "Stake amount" : "Amount"
-        value: root.tx ? root.tx.amount + " BDX" : ""
-        visible: root.tx && root.tx.kind !== "unlock" && root.tx.kind !== "bns-update"
+        key: !root.tx ? "" : root.tx.kind === "stake" ? "Stake amount" : root.tx.kind === "token-register" ? "Initial supply"
+           : root.tx.kind === "token-mint" ? "Mint" : root.tx.kind === "token-burn" ? "Burn" : "Amount"
+        value: !root.tx ? "" : root.bdx ? root.tx.amount + " BDX" : root.tx.amount + (root.tx.unit ? " " + root.tx.unit : "")
+        valueColor: root.bdx ? Theme.text : Theme.green
+        visible: root.tx && root.tx.kind !== "unlock" && root.tx.kind !== "bns-update" && root.tx.kind !== "token-update"
     }
     KeyValue { key: "Network fee"; value: root.tx ? root.tx.fee + " BDX" : "" }
     KeyValue {
         key: "Total"
         value: root.tx ? root.tx.total + " BDX" : ""
         valueColor: Theme.green
-        visible: root.tx && root.tx.kind !== "unlock" && root.tx.kind !== "bns-update"
+        visible: root.tx && root.bdx && root.tx.kind !== "unlock" && root.tx.kind !== "bns-update"
     }
     KeyValue {
         key: root.tx && root.tx.kind.indexOf("bns") === 0 ? "Name"
-           : root.tx && (root.tx.kind === "stake" || root.tx.kind === "unlock") ? "Master node" : "To"
+           : root.tx && (root.tx.kind === "stake" || root.tx.kind === "unlock") ? "Master node"
+           : root.tx && root.tx.kind === "token-update" ? "New owner" : "To"
         value: root.tx ? root.tx.destinations.join("\n") : ""
         valueColor: Theme.green
         visible: root.tx && root.tx.destinations.length > 0

@@ -9,16 +9,19 @@ ColumnLayout {
     spacing: 0
     readonly property var wallet: WalletManager.wallet
 
-    readonly property var pages: [
+    // Same order as the StackLayout below. Tokens exist on testnet only, so mainnet never shows that tab.
+    readonly property var allPages: [
         { id: "overview", title: "Overview" },
         { id: "send", title: "Send" },
         { id: "receive", title: "Receive" },
         { id: "history", title: "History" },
         { id: "staking", title: "Master Nodes" },
         { id: "bns", title: "BNS" },
+        { id: "tokens", title: "Tokens" },
         { id: "contacts", title: "Contacts" },
         { id: "settings", title: "Settings" }
     ]
+    readonly property var pages: allPages.filter(p => p.id !== "tokens" || (wallet && wallet.tokensEnabled))
 
     // --- status strip (explorer: "BDX Price … Height … ◈ MAINNET") ----------------------------
     Rectangle {
@@ -175,7 +178,8 @@ ColumnLayout {
     StackLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        currentIndex: Math.max(0, shell.pages.findIndex(p => p.id === App.page))
+        currentIndex: Math.max(0, shell.pages.findIndex(p => p.id === App.page) < 0 ? 0
+                                  : shell.allPages.findIndex(p => p.id === App.page))
 
         OverviewPage {}
         SendPage {}
@@ -183,6 +187,7 @@ ColumnLayout {
         HistoryPage {}
         StakingPage {}
         BnsPage {}
+        Loader { active: shell.wallet && shell.wallet.tokensEnabled; sourceComponent: Component { TokensPage {} } }
         ContactsPage {}
         SettingsPage {}
     }

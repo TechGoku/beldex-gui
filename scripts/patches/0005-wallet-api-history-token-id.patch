@@ -1,0 +1,130 @@
+diff --git a/src/wallet/api/transaction_history.cpp b/src/wallet/api/transaction_history.cpp
+index 4a1f2d223..255c83850 100755
+--- a/src/wallet/api/transaction_history.cpp
++++ b/src/wallet/api/transaction_history.cpp
+@@ -132,6 +132,29 @@ void TransactionHistoryImpl::refresh()
+ 
+     std::list<std::pair<crypto::hash, tools::wallet2::payment_details>> in_payments;
+     auto w = m_wallet->wallet();
++
++    // Privacy tokens. Incoming payments record their token id. Outgoing ones take the token id, token amount
++    // and destinations from wallet2's transfer view, as the CLI's show_transfers does. (The view of an
++    // incoming payment would search every wallet output, so it isn't used for those.) BDX amounts are unchanged.
++    auto apply_in = [](TransactionInfoImpl *ti, const tools::wallet2::payment_details &pd) {
++        ti->m_pay_type = wallet::pay_type_string(pd.m_type);
++        if (pd.m_token_id != crypto::null_tid)
++            ti->m_token_id = tools::type_to_hex(pd.m_token_id);
++    };
++    auto apply_view = [&](TransactionInfoImpl *ti, const wallet::transfer_view &tv) {
++        ti->m_pay_type = wallet::pay_type_string(tv.pay_type);
++        ti->m_token_id = tv.token_id;
++        if (!tv.token_id.empty())
++            ti->m_amount = tv.amount;
++        bool token_dest = false;
++        for (const auto &d : tv.destinations)
++            token_dest = token_dest || !d.token_id.empty();
++        if (token_dest) {
++            ti->m_transfers.clear();
++            for (const auto &d : tv.destinations)
++                ti->m_transfers.push_back({d.amount, d.address, d.token_id});
++        }
++    };
+     w->get_payments(in_payments, min_height, max_height);
+     for (std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>::const_iterator i = in_payments.begin(); i != in_payments.end(); ++i) {
+         const tools::wallet2::payment_details &pd = i->second;
+@@ -156,6 +179,7 @@ void TransactionHistoryImpl::refresh()
+         ti->m_reward_type = from_pay_type(pd.m_type);
+         ti->m_coinbase = pd.is_coinbase();
+         ti->m_description = w->get_tx_note(pd.m_tx_hash);
++        apply_in(ti, pd);
+         m_history.push_back(ti);
+ 
+     }
+@@ -208,6 +232,7 @@ void TransactionHistoryImpl::refresh()
+         }
+         ti->m_coinbase = false;
+         ti->m_description = w->get_tx_note(hash);
++        apply_view(ti, w->make_transfer_view(hash, pd));
+         m_history.push_back(ti);
+     }
+ 
+@@ -242,6 +267,7 @@ void TransactionHistoryImpl::refresh()
+         ti->m_confirmations = 0;
+         ti->m_coinbase = false;
+         ti->m_description = w->get_tx_note(hash);
++        apply_view(ti, w->make_transfer_view(hash, pd));
+         m_history.push_back(ti);
+     }
+     
+@@ -272,6 +298,7 @@ void TransactionHistoryImpl::refresh()
+         ti->m_reward_type = from_pay_type(pd.m_type);
+         ti->m_coinbase = pd.is_coinbase();
+         ti->m_description = w->get_tx_note(pd.m_tx_hash);
++        apply_in(ti, pd);
+         m_history.push_back(ti);
+         
+         LOG_PRINT_L1(__FUNCTION__ << ": Unconfirmed payment found " << pd.m_amount);
+diff --git a/src/wallet/api/transaction_info.cpp b/src/wallet/api/transaction_info.cpp
+index cc159f577..ffe7fde09 100755
+--- a/src/wallet/api/transaction_info.cpp
++++ b/src/wallet/api/transaction_info.cpp
+@@ -38,8 +38,8 @@ EXPORT
+ TransactionInfo::~TransactionInfo() {}
+ 
+ EXPORT
+-TransactionInfo::Transfer::Transfer(uint64_t _amount, std::string _address)
+-    : amount(_amount), address(std::move(_address)) {}
++TransactionInfo::Transfer::Transfer(uint64_t _amount, std::string _address, std::string _tokenId)
++    : amount(_amount), address(std::move(_address)), tokenId(std::move(_tokenId)) {}
+ 
+ 
+ EXPORT
+diff --git a/src/wallet/api/transaction_info.h b/src/wallet/api/transaction_info.h
+index 81e0478bb..f6dd9f057 100755
+--- a/src/wallet/api/transaction_info.h
++++ b/src/wallet/api/transaction_info.h
+@@ -70,6 +70,8 @@ public:
+     bool isStake() const override;
+     bool isBns() const override;
+     bool isMinerReward() const override;
++    std::string tokenId() const override { return m_token_id; }
++    std::string payType() const override { return m_pay_type; }
+ 
+ private:
+     int         m_direction;
+@@ -93,6 +95,8 @@ private:
+     std::vector<Transfer> m_transfers;
+     uint64_t    m_confirmations;
+     uint64_t    m_unlock_time;
++    std::string m_token_id;
++    std::string m_pay_type;
+ 
+     friend class TransactionHistoryImpl;
+ 
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index cedb238eb..392af8369 100755
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -169,9 +169,10 @@ struct TransactionInfo
+     };
+ 
+     struct Transfer {
+-        Transfer(uint64_t _amount, std::string address);
++        Transfer(uint64_t _amount, std::string address, std::string tokenId = {});
+         const uint64_t amount;
+         const std::string address;
++        const std::string tokenId;  // empty = native BDX, else hex privacy-token id
+     };
+ 
+     virtual ~TransactionInfo() = 0;
+@@ -198,6 +199,10 @@ struct TransactionInfo
+     virtual std::string paymentId() const = 0;
+     //! only applicable for output transactions
+     virtual const std::vector<Transfer> & transfers() const = 0;
++    //! privacy token moved by this transaction (hex id); empty = native BDX. amount() is then in token units.
++    virtual std::string tokenId() const { return {}; }
++    //! wallet2 pay type ("in", "out", "stake", "register", "mint", "update", "burn_token", ...)
++    virtual std::string payType() const { return {}; }
+ };
+ /**
+  * @brief The TransactionHistory - interface for displaying transaction history

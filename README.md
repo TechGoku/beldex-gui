@@ -29,6 +29,7 @@ There is no `beldex-wallet-rpc` process, no localhost RPC port, no Node.js and n
 | History      | Filters (in, out, rewards, stakes, BNS, pending), search, details dialog (note, tx key, explorer link), CSV export. |
 | Master Nodes | Your stakes with their status, stake to a master node, request stake unlock. |
 | BNS          | Your `.bdx` names (BChat, wallet, BelNet, ETH values), register for 1/2/5/10 years, renew, update. |
+| Tokens       | **Testnet only.** Privacy-token balances, send and sweep a token, create (register) a token, mint, burn, update metadata or hand over ownership, and a searchable copy of the chain's token registry (by ticker, name, id or owner). |
 | Contacts     | Address book stored inside the wallet file. |
 | Settings     | Node choice (public remote nodes or your own beldexd, RPC login, trusted flag), seed and keys behind a password, change password, rescan, sign/verify messages, about. |
 
@@ -109,6 +110,16 @@ transactions. Released Beldex core can't read those, so `external/beldex` tracks
 (what the public testnet node runs). Mainnet behaves as before on it. A local testnet node built from this core also needs
 a reachable peer under Settings › Node › Testnet peers.
 
+**Privacy tokens (testnet only).** Testnet wallets get a Tokens tab and an asset picker on Send; mainnet wallets show
+neither, because mainnet has no tokens yet. It covers what the CLI's token commands do: `balance` (token balances per
+account), `transfer <token_id:address>`, `sweep_all bdx:/token_id:/address`, `register_privacy_token`, `mint_token`,
+`burn_token`, `update_token` (metadata and owner) and `tokens_by_owner`. Token amounts use each token's own decimals; the
+network fee is always BDX, and core adds protocol fees on testnet: registering costs 100 BDX (50 burned, 50 to
+governance), minting burns 5 BDX, updating 1 BDX, burning is free. History shows token transfers in their own units with the token id in the details. Core's
+`TokensByOwner` asks the node about every token one at a time (about 4 minutes for the ~670 testnet tokens, with the
+wallet blocked), so the app reads the registry itself, six requests at a time (about a minute), keeps a copy in the app
+data folder, re-reads it once a day, and filters it by owner locally.
+
 ## Building
 
 You need Qt **6.8+** (Core, Gui, Qml, Quick, QuickControls2, Concurrent, Svg), CMake 3.21+ and a C++17 compiler.
@@ -182,6 +193,11 @@ QT_QPA_PLATFORM=offscreen BELDEX_GUI_SHOTS=shots ./build/beldex-wallet-gui      
 Local node checks: `BELDEX_GUI_TOUR=testnet-local`, `devnet-local` and `mainnet-local` start beldexd in a throwaway
 folder, connect a new wallet to it, and check that quitting stops it.
 
+Privacy tokens: `BELDEX_GUI_TOUR=tokens` in a demo build runs every token action (balances, send, sweep, register, mint,
+burn, update, owner lookup, history units) and checks a mainnet wallet shows none; CI runs it. `BELDEX_GUI_TOUR=tokens-real`
+in a real build syncs a new testnet wallet, reads the live registry and calls core's token functions up to (not
+including) broadcasting.
+
 Other real-build checks: `BELDEX_GUI_TOUR=midscan` (seed, subaddress and close during a scan, then resume),
 `BELDEX_GUI_TOUR=resume` (restored wallet closed before its first scan; rescan from height).
 
@@ -193,8 +209,12 @@ not to the terminal.
 
 ## Notes for Beldex core
 
-beldex-gui carries one small patch to Beldex core, `scripts/patches/0001-wallet-api-lock-free-stop.patch`.
-`build-beldex-core.sh` applies it automatically, and it should go upstream:
+beldex-gui carries a few small patches to Beldex core in `scripts/patches/`. `build-beldex-core.sh` applies them
+automatically, and they should go upstream:
+
+- **`0005`: wallet_api history doesn't say which token moved.** `TransactionInfo` has no token id, so a token transfer
+  looked like a BDX amount. The patch adds `tokenId()` and `payType()` (and a token id per transfer), filled from
+  `wallet2::make_transfer_view` exactly as the CLI's `show_transfers` does.
 
 - **`WalletImpl::stop()` couldn't stop a scan.** It took the refresh lock that the scan holds for its whole duration,
   then set `wallet2`'s atomic stop flag, so it only returned once the scan had finished. The patch sets the flag without

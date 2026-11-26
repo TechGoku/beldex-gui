@@ -7,9 +7,20 @@ BdxPage {
     id: page
     readonly property var w: WalletManager.wallet
     property string feeEstimate: "—"
+    // Testnet: "" sends BDX, a token id sends that privacy token (the fee is still BDX).
+    property string asset: ""
+    readonly property var token: {
+        if (!w || asset === "") return null
+        for (const t of w.tokens) if (t.tokenId === asset) return t
+        return null
+    }
+    readonly property string unit: token ? token.ticker : "BDX"
+    readonly property int decimals: token ? token.decimals : 9
+    onTokenChanged: if (asset !== "" && token === null) asset = ""   // token spent or account switched
 
-    title: "Send BDX"
-    subtitle: w ? "From account #" + w.accountIndex + " · unlocked " + App.money(w.unlockedBalance) + " BDX" : ""
+    title: "Send " + unit
+    subtitle: !w ? "" : "From account #" + w.accountIndex + " · unlocked "
+              + (token ? App.money(token.unlocked) + " " + token.ticker : App.money(w.unlockedBalance) + " BDX")
 
     ListModel { id: recipients; ListElement { address: ""; amount: "" } }
 
@@ -34,15 +45,20 @@ BdxPage {
     }
     Component.onCompleted: refreshFee()
 
-    // Prefill from Contacts / URI
+    // Prefill from Contacts / URI / Tokens. App.go() sets pageArgs before page, so apply on either change.
+    function applyArgs() {
+        if (App.page !== "send") return
+        if (App.pageArgs.token !== undefined)
+            page.asset = App.pageArgs.token
+        if (App.pageArgs.address) {
+            recipients.setProperty(0, "address", App.pageArgs.address)
+            if (App.pageArgs.amount) recipients.setProperty(0, "amount", App.pageArgs.amount)
+        }
+    }
     Connections {
         target: App
-        function onPageArgsChanged() {
-            if (App.page === "send" && App.pageArgs.address) {
-                recipients.setProperty(0, "address", App.pageArgs.address)
-                if (App.pageArgs.amount) recipients.setProperty(0, "amount", App.pageArgs.amount)
-            }
-        }
+        function onPageArgsChanged() { page.applyArgs() }
+        function onPageChanged() { page.applyArgs() }
     }
 
     RowLayout {
@@ -55,6 +71,21 @@ BdxPage {
             Layout.fillWidth: true
             Layout.alignment: Qt.AlignTop
 
+            RowLayout {
+                visible: page.w.tokensEnabled
+                spacing: 12
+                Caption { text: "Asset" }
+                BdxButton {
+                    text: (page.token ? page.token.ticker + "  ·  " + App.money(page.token.unlocked) + " unlocked" : "BDX") + "  ▾"
+                    onClicked: assetMenu.popup()
+                }
+                Mono {
+                    text: page.w.tokens.length === 0 ? "No privacy tokens in this account yet" : "Token transfers pay their fee in BDX"
+                    color: Theme.textFaint
+                    font.pixelSize: 11
+                }
+            }
+
             Repeater {
                 model: recipients
                 delegate: RowLayout {
@@ -63,7 +94,8 @@ BdxPage {
                     required property string address
                     required property string amount
                     readonly property bool addrOk: address.length === 0 || WalletManager.addressValid(address, page.w.netType)
-                    readonly property bool amtOk: amount.length === 0 || WalletManager.amountValid(amount)
+                    readonly property bool amtOk: amount.length === 0
+                        || (page.asset === "" ? WalletManager.amountValid(amount) : page.w.tokenAmountValid(amount, page.asset))
                     Layout.fillWidth: true
                     spacing: 12
 
@@ -93,11 +125,14 @@ BdxPage {
                     BdxTextField {
                         label: "Amount"
                         placeholderText: "0.00"
-                        suffix: "BDX"
+                        suffix: page.unit
                         text: rcpt.amount
                         Layout.preferredWidth: 220
                         error: rcpt.amtOk ? "" : "Invalid amount"
-                        validator: RegularExpressionValidator { regularExpression: /^\d{0,10}(\.\d{0,9})?$/ }
+                        validator: RegularExpressionValidator {
+                            regularExpression: page.asset === "" ? /^\d{0,10}(\.\d{0,9})?$/
+                                : page.decimals > 0 ? new RegExp("^\\d{0,20}(\\.\\d{0," + page.decimals + "})?$") : /^\d{0,20}$/
+                        }
                         field.onTextEdited: recipients.setProperty(rcpt.index, "amount", field.text)
                     }
                     BdxButton {
@@ -142,15 +177,19 @@ BdxPage {
                 }
                 Item { Layout.fillWidth: true }
                 BdxButton {
-                    text: "Send all"
+                    text: page.asset === "" ? "Send all" : "Send all " + page.unit
                     enabled: page.w.synchronized && !page.w.busy
-                    onClicked: page.w.createSweepAll(flash.checked)
+                    // BDX: the whole balance to this account (as before). A token: all of it to the
+                    // recipient above, or to this account when no single address is filled in.
+                    onClicked: page.asset === "" ? page.w.createSweepAll(flash.checked)
+                        : page.w.sweep(page.asset, recipients.count === 1 ? recipients.get(0).address.trim() : "", flash.checked)
                 }
                 BdxButton {
                     text: page.w.busy ? page.w.busyText : "Review & send"
                     variant: "primary"
                     enabled: page.w.connected && page.w.synchronized && App.nodeReady && !page.w.busy
-                    onClicked: page.w.createTransaction(page.destinations(), flash.checked)
+                    onClicked: page.asset === "" ? page.w.createTransaction(page.destinations(), flash.checked)
+                        : page.w.createTransaction(page.destinations(), flash.checked, page.asset)
                 }
             }
             Mono {
@@ -178,6 +217,22 @@ BdxPage {
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }
+        }
+    }
+
+    Menu {
+        id: assetMenu
+        MenuItem { text: "BDX"; font.family: Theme.mono; onTriggered: page.asset = "" }
+        Instantiator {
+            model: page.w && page.w.tokensEnabled ? page.w.tokens : []
+            delegate: MenuItem {
+                required property var modelData
+                text: modelData.ticker + "  ·  " + modelData.unlocked + " unlocked" + (modelData.fullName ? "  ·  " + modelData.fullName : "")
+                font.family: Theme.mono
+                onTriggered: page.asset = modelData.tokenId
+            }
+            onObjectAdded: (index, object) => assetMenu.insertItem(index + 1, object)
+            onObjectRemoved: (index, object) => assetMenu.removeItem(object)
         }
     }
 

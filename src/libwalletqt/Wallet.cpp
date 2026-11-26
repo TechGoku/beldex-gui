@@ -4,16 +4,21 @@
 
 #include "Amount.h"
 #include "PendingTransaction.h"
+#include "TokenRegistry.h"
 
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QtConcurrent>
 
 #include <atomic>
+#include <limits>
 #include <stdexcept>
 
 using namespace bdx;
@@ -89,7 +94,19 @@ Wallet::Wallet(IEngine *engine, std::unique_ptr<IWallet> wallet, QObject *parent
     m_watchOnly = m_w->watchOnly();
     m_primaryAddress = m_w->address(0, 0);
     m_restoreHeight = m_w->refreshFromHeight();
+    m_spendKey = m_w->publicSpendKey().toLower();
     m_w->setListener(m_listener.get());
+
+    m_registry = new TokenRegistry(int(m_net), this);
+    if (tokensEnabled()) {
+        connect(m_registry, &TokenRegistry::changed, this, [this] { applyTokenBalances(m_tokenBalances); });
+        if (engine->isDemo()) {
+            m_registry->setOffline(true);
+            loadDemoTokens();
+        } else {
+            m_registry->loadCache();
+        }
+    }
 
     m_poll.setInterval(engine->isDemo() ? 700 : 2000);
     connect(&m_poll, &QTimer::timeout, this, &Wallet::pollStatus);
@@ -347,7 +364,7 @@ QVariantList Wallet::recentTransactions() const
     QVariantList out;
     const auto &all = m_history->all();
     for (size_t i = 0; i < all.size() && i < 8; ++i)
-        out << TransactionHistoryModel::toMap(all[i]);
+        out << m_history->toMap(all[i]);
     return out;
 }
 
@@ -356,6 +373,8 @@ QVariantList Wallet::recentTransactions() const
 void Wallet::connectToDaemon(const QString &address, const QString &user, const QString &password, bool trusted)
 {
     m_daemonAddress = address;
+    if (!m_engine->isDemo())
+        m_registry->setNode(address);
     m_conn = ConnStatus::Disconnected;
     emit connectionChanged();
     struct Initial {
@@ -480,6 +499,8 @@ void Wallet::pollStatus()
                         if (syncFlip) {
                             reloadStakes();
                             reloadBns();
+                            if (m_synced)
+                                syncTokenRegistry();
                         }
                     }
                 });
@@ -504,6 +525,8 @@ void Wallet::onListenerUpdated(bool historyMayChange, quint64 scanHeight)
 void Wallet::refreshAll()
 {
     run([](IWallet &w) { w.refreshAsync(); });
+    if (tokensEnabled() && m_engine->isDemo())
+        loadDemoTokens();
     reloadBalances();
     reloadHistory();
     reloadSubaddresses();
@@ -603,11 +626,22 @@ void Wallet::reloadBalances()
         return;
     struct B {
         std::vector<AccountRecord> accounts;
+        std::vector<TokenBalance> tokens;
     };
-    run<B>(QString(), [](IWallet &w) { return B{w.accounts()}; },
-           [this](B b) {
+    const bool tokens = tokensEnabled();
+    const quint32 acct = quint32(m_account);
+    run<B>(QString(),
+           [tokens, acct](IWallet &w) {
+               B b{w.accounts(), {}};
+               if (tokens)
+                   b.tokens = w.tokenBalances(acct);
+               return b;
+           },
+           [this, tokens](B b) {
                endReload(Reload::Balances);
                applyAccounts(b.accounts);
+               if (tokens && !b.accounts.empty())
+                   applyTokenBalances(b.tokens);
            });
 }
 
@@ -653,6 +687,8 @@ void Wallet::reloadHistory()
 void Wallet::applyHistory(std::vector<TxRecord> txs)
 {
     m_history->setTransactions(std::move(txs));
+    if (tokensEnabled())
+        updateTokenMeta();
     emit historyChanged();
 }
 
@@ -813,7 +849,7 @@ QString Wallet::makePaymentUri(const QString &address, const QString &amount, co
 // --- send ------------------------------------------------------------------------------------
 
 void Wallet::emitCreated(std::unique_ptr<IPendingTx> tx, const QString &kind, const QStringList &dests, bool flash,
-                         const QString &note)
+                         const QString &note, const QString &tokenId, const QString &unit, const QString &amountText)
 {
     if (!tx)
         return;  // the call threw; run() already reported it
@@ -822,18 +858,29 @@ void Wallet::emitCreated(std::unique_ptr<IPendingTx> tx, const QString &kind, co
         return;
     }
     auto *p = new PendingTransaction(std::move(tx), kind, dests, flash, note, this);
+    if (!unit.isNull())
+        p->setToken(tokenId, unit, amountText);
     QQmlEngine::setObjectOwnership(p, QQmlEngine::CppOwnership);
     emit transactionCreated(p);
 }
 
-void Wallet::createTransaction(const QVariantList &destinations, bool flash)
+void Wallet::createTransaction(const QVariantList &destinations, bool flash, const QString &tokenId)
 {
+    std::optional<int> decimals;
+    if (!tokenId.isEmpty()) {
+        decimals = tokenDecimals(tokenId);
+        if (!tokensEnabled() || !decimals) {
+            emit error(tr("Unknown token %1").arg(tokenId.left(12) + QStringLiteral("…")));
+            return;
+        }
+    }
     QStringList addrs;
     QList<quint64> amounts;
     for (const auto &v : destinations) {
         const auto m = v.toMap();
         const QString a = m.value("address").toString().trimmed();
-        const auto amt = m_engine->amountFromString(m.value("amount").toString());
+        const auto amt = decimals ? bdx::parseUnits(m.value("amount").toString(), *decimals)
+                                  : m_engine->amountFromString(m.value("amount").toString());
         if (!m_engine->addressValid(a, m_net)) {
             emit error(tr("Invalid %1 address: %2").arg(netName().toLower(), a.left(14) + QStringLiteral("…")));
             return;
@@ -851,10 +898,21 @@ void Wallet::createTransaction(const QVariantList &destinations, bool flash)
     }
     const quint32 acct = quint32(m_account);
     const uint32_t prio = flash ? PriorityFlash : PriorityDefault;
+    QString unit, amountText;
+    if (decimals) {
+        quint64 sum = 0;
+        for (auto a : amounts)
+            sum += a;
+        unit = tokenMeta(tokenId).value("ticker").toString();
+        amountText = bdx::formatUnits(sum, *decimals, *decimals);
+    }
     run<std::unique_ptr<IPendingTx>>(tr("Creating transaction…"),
-                                     [addrs, amounts, prio, acct](IWallet &w) { return w.createTransaction(addrs, amounts, prio, acct); },
-                                     [this, addrs, flash](std::unique_ptr<IPendingTx> tx) {
-                                         emitCreated(std::move(tx), QStringLiteral("transfer"), addrs, flash, {});
+                                     [addrs, amounts, prio, acct, tokenId](IWallet &w) {
+                                         return w.createTransaction(addrs, amounts, prio, acct, tokenId);
+                                     },
+                                     [this, addrs, flash, tokenId, unit, amountText](std::unique_ptr<IPendingTx> tx) {
+                                         emitCreated(std::move(tx), QStringLiteral("transfer"), addrs, flash, {}, tokenId,
+                                                     unit, amountText);
                                      });
 }
 
@@ -867,6 +925,50 @@ void Wallet::createSweepAll(bool flash)
                                      [this, flash](std::unique_ptr<IPendingTx> tx) {
                                          emitCreated(std::move(tx), QStringLiteral("sweep"), {m_primaryAddress}, flash,
                                                      tr("Sends the entire unlocked balance of this account to its primary address."));
+                                     });
+}
+
+void Wallet::sweep(const QString &what, const QString &address, bool flash)
+{
+    const QString to = address.trimmed();
+    if (!to.isEmpty() && !m_engine->addressValid(to, m_net)) {
+        emit error(tr("Invalid %1 address: %2").arg(netName().toLower(), to.left(14) + QStringLiteral("…")));
+        return;
+    }
+    const bool bdxOnly = what == QLatin1String("bdx");
+    const bool all = what == QLatin1String("all");
+    if (!bdxOnly && (!tokensEnabled() || (!all && !tokenDecimals(what)))) {
+        emit error(tr("Unknown token %1").arg(what.left(12) + QStringLiteral("…")));
+        return;
+    }
+    const quint32 acct = quint32(m_account);
+    const uint32_t prio = flash ? PriorityFlash : PriorityDefault;
+    const QString dest = to.isEmpty() ? this->address() : to;
+    const QString where = to.isEmpty() ? tr("this account's address") : tr("the address above");
+    QString unit, note;
+    if (bdxOnly) {
+        unit = QStringLiteral("BDX");
+        note = tr("Sends the entire unlocked BDX balance of this account to %1. Tokens stay.").arg(where);
+    } else if (all) {
+        unit = QString(QLatin1String(""));  // mixed: BDX and tokens
+        note = tr("Sends the entire unlocked BDX balance and every token of this account to %1.").arg(where);
+    } else {
+        unit = tokenMeta(what).value("ticker").toString();
+        note = tr("Sends the entire unlocked %1 balance of this account to %2. The fee is paid in BDX.").arg(unit, where);
+    }
+    const int decimals = bdxOnly || all ? 0 : *tokenDecimals(what);
+    run<std::unique_ptr<IPendingTx>>(tr("Creating sweep transaction…"),
+                                     [what, to, prio, acct](IWallet &w) { return w.sweep(what, to, prio, acct); },
+                                     [this, flash, dest, note, what, unit, bdxOnly, all, decimals](std::unique_ptr<IPendingTx> tx) {
+                                         if (bdxOnly) {
+                                             emitCreated(std::move(tx), QStringLiteral("sweep"), {dest}, flash, note);
+                                             return;
+                                         }
+                                         const QString text = all ? tr("All BDX and tokens")
+                                                                  : tx && tx->ok() ? bdx::formatUnits(tx->amount(), decimals, decimals)
+                                                                                   : QString();
+                                         emitCreated(std::move(tx), QStringLiteral("sweep"), {dest}, flash, note,
+                                                     all ? QString() : what, unit, text);
                                      });
 }
 
@@ -883,6 +985,7 @@ void Wallet::commitTransaction(PendingTransaction *tx)
         return;
     IPendingTx *raw = tx->raw();
     const bool flash = tx->flash();
+    const QString tokenOpId = tx->kind().startsWith(QLatin1String("token-")) ? tx->tokenId() : QString();
     QPointer<PendingTransaction> guard(tx);
     run<std::pair<bool, QString>>(tr("Broadcasting transaction…"),
                                   [raw, flash](IWallet &w) {
@@ -891,8 +994,17 @@ void Wallet::commitTransaction(PendingTransaction *tx)
                                           w.store();
                                       return std::make_pair(ok, ok ? QString() : raw->errorString());
                                   },
-                                  [this, guard](std::pair<bool, QString> r) {
+                                  [this, guard, tokenOpId](std::pair<bool, QString> r) {
                                       const QStringList ids = guard ? guard->raw()->txids() : QStringList{};
+                                      if (r.first && !tokenOpId.isEmpty() && !m_engine->isDemo()) {
+                                          // The registry changes once the transaction is in a block (~30 s each).
+                                          QPointer<Wallet> self(this);
+                                          for (int ms : {40000, 100000, 200000})
+                                              QTimer::singleShot(ms, this, [self, tokenOpId] {
+                                                  if (self)
+                                                      self->m_registry->refreshToken(tokenOpId);
+                                              });
+                                      }
                                       emit transactionCommitted(r.first, r.first ? tr("Transaction sent") : r.second, ids);
                                       if (guard)
                                           guard->deleteLater();
@@ -1075,4 +1187,318 @@ QString Wallet::signMessage(const QString &message)
 bool Wallet::verifyMessage(const QString &message, const QString &address, const QString &signature)
 {
     return runSync<bool>([=](IWallet &w) { return w.verifySignedMessage(message, address.trimmed(), signature.trimmed()); });
+}
+
+// --- privacy tokens --------------------------------------------------------------------------
+
+namespace {
+// Monero-style base58 (8-byte blocks -> 11 chars). Used only to read the spend key out of an address that
+// core already validated, so the registry can be filtered by owner without asking about every token.
+QByteArray base58Decode(const QString &text)
+{
+    static const QByteArray alphabet("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz");
+    static const int encodedSizes[] = {0, 2, 3, 5, 6, 7, 9, 10, 11};
+    const QByteArray in = text.toLatin1();
+    int lastBytes = -1;
+    for (int i = 0; i <= 8; ++i)
+        if (encodedSizes[i] == in.size() % 11)
+            lastBytes = i;
+    if (lastBytes < 0)
+        return {};
+    QByteArray out;
+    auto block = [&](int pos, int len, int bytes) {
+        quint64 v = 0;
+        for (int i = 0; i < len; ++i) {
+            const int d = alphabet.indexOf(in[pos + i]);
+            if (d < 0 || v > (std::numeric_limits<quint64>::max() - quint64(d)) / 58)
+                return false;
+            v = v * 58 + quint64(d);
+        }
+        if (bytes < 8 && v >> (8 * bytes))
+            return false;
+        for (int i = bytes - 1; i >= 0; --i)
+            out.append(char((v >> (8 * i)) & 0xff));
+        return true;
+    };
+    int pos = 0;
+    for (; pos + 11 <= in.size(); pos += 11)
+        if (!block(pos, 11, 8))
+            return {};
+    if (lastBytes > 0 && !block(pos, in.size() - pos, lastBytes))
+        return {};
+    return out;
+}
+} // namespace
+
+std::optional<int> Wallet::tokenDecimals(const QString &tokenId) const
+{
+    for (const auto &b : m_tokenBalances)
+        if (b.tokenId == tokenId)
+            return b.decimals;
+    if (const auto t = m_registry->info(tokenId))
+        return t->decimals;
+    return std::nullopt;
+}
+
+QVariantMap Wallet::tokenMeta(const QString &tokenId) const
+{
+    QVariantMap m{{"tokenId", tokenId}, {"ticker", tokenId.left(8) + QStringLiteral("…")}, {"fullName", QString()},
+                  {"decimals", -1}};
+    if (const auto t = m_registry->info(tokenId)) {
+        m["ticker"] = t->ticker;
+        m["fullName"] = t->fullName;
+        m["decimals"] = t->decimals;
+        m["owner"] = t->owner;
+        m["mine"] = t->owner.compare(m_spendKey, Qt::CaseInsensitive) == 0;
+    }
+    for (const auto &b : m_tokenBalances)
+        if (b.tokenId == tokenId) {
+            if (!b.ticker.isEmpty())
+                m["ticker"] = b.ticker;
+            m["decimals"] = b.decimals;
+        }
+    return m;
+}
+
+bool Wallet::tokenAmountValid(const QString &amount, const QString &tokenId) const
+{
+    const auto d = tokenDecimals(tokenId);
+    return d && bdx::parseUnits(amount, *d).has_value();
+}
+
+QString Wallet::ownerKeyOf(const QString &addressOrKey) const
+{
+    const QString v = addressOrKey.trimmed();
+    static const QRegularExpression hex(QStringLiteral("^[0-9a-fA-F]{64}$"));
+    if (hex.match(v).hasMatch())
+        return v.toLower();
+    if (v == m_primaryAddress)
+        return m_spendKey;
+    if (!m_engine->addressValid(v, m_net))
+        return {};
+    const QByteArray raw = base58Decode(v);
+    int tag = 0;  // varint network prefix
+    while (tag < raw.size() && (uchar(raw[tag]) & 0x80))
+        ++tag;
+    ++tag;
+    if (raw.size() < tag + 64 + 4)
+        return {};
+    return QString::fromLatin1(raw.mid(tag, 32).toHex());
+}
+
+void Wallet::applyTokenBalances(const std::vector<TokenBalance> &balances)
+{
+    m_tokenBalances = balances;
+    QVariantList out;
+    for (const auto &b : balances) {
+        const auto reg = m_registry->info(b.tokenId);
+        out << QVariantMap{{"tokenId", b.tokenId},
+                           {"ticker", !b.ticker.isEmpty() ? b.ticker : reg ? reg->ticker : b.tokenId.left(8) + QStringLiteral("…")},
+                           {"fullName", reg ? reg->fullName : QString()},
+                           {"decimals", b.decimals},
+                           {"balance", bdx::formatUnits(b.balance, b.decimals, 4)},
+                           {"unlocked", bdx::formatUnits(b.unlocked, b.decimals, 4)},
+                           {"unlockedFull", bdx::formatUnits(b.unlocked, b.decimals, b.decimals, false)},
+                           {"locked", b.balance > b.unlocked},
+                           {"mine", reg && reg->owner.compare(m_spendKey, Qt::CaseInsensitive) == 0}};
+    }
+    if (out != m_tokens) {
+        m_tokens = out;
+        emit tokensChanged();
+    }
+    updateTokenMeta();
+}
+
+// Tickers and decimals for history rows; "my tokens" from the registry. Token ids we have never seen are
+// asked of the node once.
+void Wallet::updateTokenMeta()
+{
+    QHash<QString, TransactionHistoryModel::TokenMeta> meta;
+    for (const QString &id : m_history->tokenIds()) {
+        const QVariantMap m = tokenMeta(id);
+        meta.insert(id, {m.value("ticker").toString(), m.value("decimals").toInt()});
+        if (m.value("decimals").toInt() < 0 && !m_metaRequested.contains(id)) {
+            m_metaRequested.insert(id);
+            m_registry->refreshToken(id);
+        }
+    }
+    m_history->setTokenMeta(std::move(meta));
+
+    QVariantList owned;
+    for (const auto &t : m_registry->byOwner(m_spendKey)) {
+        QVariantMap m = TokenRegistry::toMap(t);
+        QString held = QStringLiteral("0");
+        for (const auto &b : m_tokenBalances)
+            if (b.tokenId == t.tokenId)
+                held = bdx::formatUnits(b.balance, b.decimals, 4);
+        m["held"] = held;
+        owned << m;
+    }
+    if (owned != m_ownedTokens) {
+        m_ownedTokens = owned;
+        emit ownedTokensChanged();
+    }
+}
+
+void Wallet::loadDemoTokens()
+{
+    run<std::vector<TokenInfo>>(QString(), [](IWallet &w) { return w.knownTokens(); },
+                                [this](std::vector<TokenInfo> all) { m_registry->setAll(all); });
+}
+
+void Wallet::syncTokenRegistry()
+{
+    if (!tokensEnabled() || m_engine->isDemo())
+        return;
+    // Ticker, name and decimals never change; supply, metadata and owner can. A full read takes about a
+    // minute on testnet, so it runs when the copy is missing or a day old; our own tokens refresh each time.
+    const QDateTime updated = QDateTime::fromString(m_registry->updated(), QStringLiteral("yyyy-MM-dd HH:mm"));
+    if (m_registry->count() == 0 || !updated.isValid() || updated.secsTo(QDateTime::currentDateTime()) > 24 * 3600) {
+        m_registry->refresh();
+        return;
+    }
+    for (const auto &t : m_registry->byOwner(m_spendKey))
+        m_registry->refreshToken(t.tokenId);
+}
+
+void Wallet::refreshTokens()
+{
+    if (!tokensEnabled())
+        return;
+    if (m_engine->isDemo())
+        loadDemoTokens();
+    else
+        m_registry->refresh();
+    reloadBalances();
+}
+
+void Wallet::tokenOp(const QString &busy, std::function<std::unique_ptr<IPendingTx>(IWallet &, QString *)> work,
+                     const QString &kind, const QString &tokenId, const QStringList &dests, const QString &unit,
+                     const QString &amountText, const QString &note)
+{
+    if (!tokensEnabled()) {
+        emit error(tr("Privacy tokens are only available on testnet"));
+        return;
+    }
+    struct R {
+        std::unique_ptr<IPendingTx> tx;
+        QString id;
+    };
+    run<std::shared_ptr<R>>(busy,
+                            [work](IWallet &w) {
+                                auto r = std::make_shared<R>();
+                                r->tx = work(w, &r->id);
+                                return r;
+                            },
+                            [this, kind, tokenId, dests, unit, amountText, note](std::shared_ptr<R> r) {
+                                if (!r)
+                                    return;
+                                const QString id = tokenId.isEmpty() ? r->id : tokenId;
+                                emitCreated(std::move(r->tx), kind, dests, false,
+                                            id.isEmpty() ? note : note + QStringLiteral("\n") + tr("Token id: %1").arg(id), id,
+                                            unit, amountText);
+                            });
+}
+
+void Wallet::registerToken(const QVariantMap &f)
+{
+    const QString ticker = f.value("ticker").toString().trimmed();
+    const QString name = f.value("fullName").toString().trimmed();
+    const QString meta = f.value("metaInfo").toString();
+    bool decOk = false;
+    const int decimals = f.value("decimals").toString().trimmed().toInt(&decOk);
+    if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9]{1,14}$")).match(ticker).hasMatch())
+        return emit error(tr("Ticker: 1–14 letters or digits"));
+    if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9 _.\\-]{1,64}$")).match(name).hasMatch())
+        return emit error(tr("Name: 1–64 letters, digits, spaces, '_', '-' or '.'"));
+    if (!decOk || decimals < 0 || decimals > 18)
+        return emit error(tr("Decimals must be 0–18"));
+    const auto maxSupply = bdx::parseUnits(f.value("maxSupply").toString(), decimals);
+    if (!maxSupply || *maxSupply == 0)
+        return emit error(tr("Maximum supply must be above zero and fit %1 decimals (at most 18,446,744,073,709,551,615 units in total)").arg(decimals));
+    const QString supplyText = f.value("supply").toString().trimmed();
+    const auto supply = supplyText.isEmpty() ? std::optional<quint64>(0) : bdx::parseUnits(supplyText, decimals);
+    if (!supply || *supply > *maxSupply)
+        return emit error(tr("Initial supply must be between 0 and the maximum supply"));
+    if (meta.toUtf8().size() > 4096)
+        return emit error(tr("Metadata is limited to 4096 bytes"));
+    // Supplies are uint64: written as JSON text so they never pass through a double.
+    QJsonObject strings{{"ticker", ticker}, {"full_name", name}, {"meta_info", meta}};
+    QString json = QString::fromUtf8(QJsonDocument(strings).toJson(QJsonDocument::Compact));
+    json.insert(1, QStringLiteral("\"version\":1,\"total_max_supply\":%1,\"current_supply\":%2,\"decimal_point\":%3,")
+                       .arg(*maxSupply).arg(*supply).arg(decimals));
+    const quint32 acct = quint32(m_account);
+    tokenOp(tr("Preparing token registration…"),
+            [json, acct](IWallet &w, QString *id) { return w.registerToken(json, id, PriorityDefault, acct); },
+            QStringLiteral("token-register"), {}, {m_primaryAddress}, ticker,
+            bdx::formatUnits(*supply, decimals, decimals),
+            tr("Registers %1 (%2): max supply %3, %4 decimals. The initial supply is sent to this wallet; only "
+               "this wallet can mint more. Registering costs 100 BDX on testnet (50 burned, 50 to governance) on top "
+               "of the network fee.")
+                .arg(ticker, name, bdx::formatUnits(*maxSupply, decimals, decimals))
+                .arg(decimals));
+}
+
+void Wallet::mintToken(const QString &tokenId, const QString &amount)
+{
+    const auto t = m_registry->info(tokenId);
+    if (!t)
+        return emit error(tr("Unknown token %1").arg(tokenId.left(12) + QStringLiteral("…")));
+    if (t->owner.compare(m_spendKey, Qt::CaseInsensitive) != 0)
+        return emit error(tr("Only the owner of %1 can mint it").arg(t->ticker));
+    const auto amt = bdx::parseUnits(amount, t->decimals);
+    if (!amt || *amt == 0)
+        return emit error(tr("Invalid amount: %1").arg(amount));
+    if (*amt > t->maxSupply - std::min(t->supply, t->maxSupply))
+        return emit error(tr("At most %1 %2 can still be minted")
+                              .arg(bdx::formatUnits(t->maxSupply - std::min(t->supply, t->maxSupply), t->decimals, t->decimals), t->ticker));
+    const quint32 acct = quint32(m_account);
+    tokenOp(tr("Preparing mint…"),
+            [tokenId, a = *amt, acct](IWallet &w, QString *) { return w.mintToken(tokenId, a, PriorityDefault, acct); },
+            QStringLiteral("token-mint"), tokenId, {m_primaryAddress}, t->ticker, bdx::formatUnits(*amt, t->decimals, t->decimals),
+            tr("New %1 are created and sent to this wallet. Minting burns 5 BDX on testnet.").arg(t->ticker));
+}
+
+void Wallet::burnToken(const QString &tokenId, const QString &amount)
+{
+    const auto d = tokenDecimals(tokenId);
+    if (!d)
+        return emit error(tr("Unknown token %1").arg(tokenId.left(12) + QStringLiteral("…")));
+    const auto amt = bdx::parseUnits(amount, *d);
+    if (!amt || *amt == 0)
+        return emit error(tr("Invalid amount: %1").arg(amount));
+    const QString ticker = tokenMeta(tokenId).value("ticker").toString();
+    const quint32 acct = quint32(m_account);
+    tokenOp(tr("Preparing burn…"),
+            [tokenId, a = *amt, acct](IWallet &w, QString *) { return w.burnToken(tokenId, a, PriorityDefault, acct); },
+            QStringLiteral("token-burn"), tokenId, {}, ticker, bdx::formatUnits(*amt, *d, *d),
+            tr("Burned %1 are destroyed publicly and the token's supply goes down. This cannot be undone.").arg(ticker));
+}
+
+void Wallet::updateToken(const QString &tokenId, const QString &metaInfo, const QString &newOwner)
+{
+    const auto t = m_registry->info(tokenId);
+    if (!t)
+        return emit error(tr("Unknown token %1").arg(tokenId.left(12) + QStringLiteral("…")));
+    if (t->owner.compare(m_spendKey, Qt::CaseInsensitive) != 0)
+        return emit error(tr("Only the owner of %1 can update it").arg(t->ticker));
+    const QString owner = newOwner.trimmed();
+    if (!owner.isEmpty() && !m_engine->addressValid(owner, m_net))
+        return emit error(tr("New owner must be a %1 address").arg(netName().toLower()));
+    if (metaInfo.toUtf8().size() > 4096)
+        return emit error(tr("Metadata is limited to 4096 bytes"));
+    if (metaInfo == t->metaInfo && (owner.isEmpty() || owner == m_primaryAddress))
+        return emit error(tr("Nothing to update: change the metadata or the owner"));
+    QJsonObject o{{"meta_info", metaInfo}};
+    if (!owner.isEmpty())
+        o.insert("owner", owner);
+    const QString json = QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+    const QString note = owner.isEmpty() || owner == m_primaryAddress
+                             ? tr("Replaces the metadata of %1. Updating burns 1 BDX on testnet.").arg(t->ticker)
+                             : tr("Hands %1 to another wallet: after this only that wallet can mint or update it. "
+                                  "Updating burns 1 BDX on testnet.").arg(t->ticker);
+    tokenOp(tr("Preparing token update…"),
+            [tokenId, json](IWallet &w, QString *) { return w.updateToken(tokenId, json, PriorityDefault); },
+            QStringLiteral("token-update"), tokenId, owner.isEmpty() ? QStringList{} : QStringList{owner}, t->ticker, QString(),
+            note);
 }

@@ -21,6 +21,7 @@ Each package includes the wallet and `beldexd`, which the wallet can run as a lo
 - Master node staking and unlocking; Beldex Name Service: register, renew, update
 - Nodes: Auto (a public node, otherwise a local beldexd), Remote, or Local. Public nodes for mainnet and testnet
 - Switch a wallet between mainnet and testnet from the network badge: the same seed, kept as a separate wallet per network
+- Testnet privacy tokens: balances, send and sweep tokens, create a token, mint, burn, update or hand over ownership, and search the token registry by name or owner (not on mainnet)
 - Live sync progress; the app stays usable and closes quickly during long scans
 
 ### Please note

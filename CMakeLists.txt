@@ -33,6 +33,8 @@ qt_add_executable(beldex-wallet-gui
     src/libwalletqt/Amount.h
     src/libwalletqt/PendingTransaction.cpp
     src/libwalletqt/PendingTransaction.h
+    src/libwalletqt/TokenRegistry.cpp
+    src/libwalletqt/TokenRegistry.h
     src/libwalletqt/Wallet.cpp
     src/libwalletqt/Wallet.h
     src/libwalletqt/WalletManager.cpp

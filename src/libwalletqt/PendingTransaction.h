@@ -20,7 +20,10 @@ class PendingTransaction : public QObject {
     Q_PROPERTY(bool ok READ ok CONSTANT)
     Q_PROPERTY(QString errorString READ errorString CONSTANT)
     Q_PROPERTY(QString kind READ kind CONSTANT)              // transfer | sweep | stake | unlock | bns-buy | bns-renew | bns-update
-    Q_PROPERTY(QString amount READ amount CONSTANT)          // formatted BDX
+                                                             // | token-register | token-mint | token-burn | token-update
+    Q_PROPERTY(QString amount READ amount CONSTANT)          // formatted, in `unit`
+    Q_PROPERTY(QString unit READ unit CONSTANT)              // "BDX", a token ticker, or "" (sweep of BDX and all tokens)
+    Q_PROPERTY(QString tokenId READ tokenId CONSTANT)
     Q_PROPERTY(QString fee READ fee CONSTANT)                // formatted BDX
     Q_PROPERTY(QString total READ total CONSTANT)
     Q_PROPERTY(int txCount READ txCount CONSTANT)
@@ -43,6 +46,15 @@ public:
     QStringList destinations() const { return m_destinations; }
     QString note() const { return m_note; }
     bool flash() const { return m_flash; }
+    QString unit() const { return m_unit; }
+    QString tokenId() const { return m_tokenId; }
+    // Token transactions: the amount is in token units and the fee in BDX, so the dialog shows them apart.
+    void setToken(const QString &tokenId, const QString &unit, const QString &amountText)
+    {
+        m_tokenId = tokenId;
+        m_unit = unit;
+        m_amountText = amountText;
+    }
 
     bdx::IPendingTx *raw() const { return m_tx.get(); }
 
@@ -52,4 +64,6 @@ private:
     QStringList m_destinations;
     bool m_flash;
     QString m_note;
+    QString m_unit = QStringLiteral("BDX");
+    QString m_tokenId, m_amountText;
 };

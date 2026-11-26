@@ -35,7 +35,8 @@ enum class ConnStatus : int { Disconnected = 0, Connected = 1, WrongVersion = 2 
 enum Priority : uint32_t { PriorityDefault = 0, PriorityFlash = 5 };
 
 struct TxRecord {
-    enum class Kind { Transfer, MinerReward, MasterNodeReward, Stake, Bns };
+    enum class Kind { Transfer, MinerReward, MasterNodeReward, Stake, Bns,
+                      TokenRegister, TokenMint, TokenBurn, TokenUpdate };
     QString hash;
     bool incoming = false;
     bool pending = false;
@@ -53,6 +54,27 @@ struct TxRecord {
     quint32 account = 0;
     QList<quint32> subaddrIndices;
     QStringList destinations;  // outgoing only
+    QString tokenId;           // privacy token moved (hex); empty = BDX. amount is then in token units.
+};
+
+// Privacy tokens (Beldex hard fork 22). Amounts are in the token's own atomic units (10^decimals).
+struct TokenBalance {
+    QString tokenId;
+    QString ticker;
+    quint64 balance = 0;
+    quint64 unlocked = 0;
+    int decimals = 0;
+};
+
+struct TokenInfo {
+    QString tokenId;
+    QString ticker;
+    QString fullName;
+    QString owner;        // owner's public spend key (hex)
+    quint64 maxSupply = 0;
+    quint64 supply = 0;
+    int decimals = 0;
+    QString metaInfo;
 };
 
 struct AccountRecord {
@@ -207,10 +229,15 @@ public:
     virtual bool deleteAddressBookRow(int rowId) = 0;
 
     // sending
+    // tokenId empty = BDX, else every destination receives that privacy token.
     virtual std::unique_ptr<IPendingTx> createTransaction(const QStringList &destinations,
                                                           const QList<quint64> &amounts,
-                                                          uint32_t priority, quint32 account) = 0;
-    virtual std::unique_ptr<IPendingTx> createSweepAll(uint32_t priority, quint32 account) = 0;
+                                                          uint32_t priority, quint32 account,
+                                                          const QString &tokenId = {}) = 0;
+    virtual std::unique_ptr<IPendingTx> createSweepAll(uint32_t priority, quint32 account) = 0;  // BDX to ourselves
+    // Sweep to `address` (empty = this account): what is a token id, "bdx" (native only) or "all" (BDX + every token).
+    virtual std::unique_ptr<IPendingTx> sweep(const QString &what, const QString &address, uint32_t priority,
+                                              quint32 account) = 0;
     virtual quint64 estimateFee(uint32_t priority, quint32 recipients) const = 0;
 
     // master node staking
@@ -224,6 +251,23 @@ public:
     virtual std::unique_ptr<IPendingTx> buyBns(const BnsRequest &req, quint32 account) = 0;
     virtual std::unique_ptr<IPendingTx> renewBns(const QString &name, const QString &years, quint32 account) = 0;
     virtual std::unique_ptr<IPendingTx> updateBns(const BnsRequest &req, quint32 account) = 0;
+
+    // privacy tokens
+    virtual std::vector<TokenBalance> tokenBalances(quint32 account) = 0;
+    // The token registry when the engine has one without a node (demo engine). The Beldex engine returns
+    // nothing: the GUI reads the registry from the node itself (TokenRegistry), in parallel.
+    virtual std::vector<TokenInfo> knownTokens() = 0;
+    // descriptorJson: core's token descriptor (ticker, full_name, total_max_supply, current_supply, decimal_point,
+    // meta_info). The new token's id is written to *tokenId.
+    virtual std::unique_ptr<IPendingTx> registerToken(const QString &descriptorJson, QString *tokenId,
+                                                      uint32_t priority, quint32 account) = 0;
+    virtual std::unique_ptr<IPendingTx> mintToken(const QString &tokenId, quint64 amount, uint32_t priority,
+                                                  quint32 account) = 0;
+    virtual std::unique_ptr<IPendingTx> burnToken(const QString &tokenId, quint64 amount, uint32_t priority,
+                                                  quint32 account) = 0;
+    // descriptorJson: {"meta_info": "...", "owner": "<address>"} (owner optional). Primary account only.
+    virtual std::unique_ptr<IPendingTx> updateToken(const QString &tokenId, const QString &descriptorJson,
+                                                    uint32_t priority) = 0;
 
     // tools
     virtual QString signMessage(const QString &message) = 0;

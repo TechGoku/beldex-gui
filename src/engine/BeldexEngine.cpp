@@ -212,6 +212,12 @@ public:
             r.description = q(t->description());
             r.label = q(t->label());
             r.account = t->subaddrAccount();
+            r.tokenId = q(t->tokenId());
+            const std::string pay = t->payType();
+            if (pay == "register") r.kind = TxRecord::Kind::TokenRegister;
+            else if (pay == "mint") r.kind = TxRecord::Kind::TokenMint;
+            else if (pay == "burn_token") r.kind = TxRecord::Kind::TokenBurn;
+            else if (pay == "update") r.kind = TxRecord::Kind::TokenUpdate;
             for (auto i : t->subaddrIndex())
                 r.subaddrIndices << i;
             for (const auto &tr : t->transfers())
@@ -236,7 +242,7 @@ public:
     bool deleteAddressBookRow(int rowId) override { return m_w->addressBook()->deleteRow(std::size_t(rowId)); }
 
     std::unique_ptr<IPendingTx> createTransaction(const QStringList &dests, const QList<quint64> &amounts,
-                                                  uint32_t priority, quint32 account) override
+                                                  uint32_t priority, quint32 account, const QString &tokenId) override
     {
         std::vector<std::string> d;
         for (const auto &a : dests)
@@ -244,12 +250,29 @@ public:
         std::optional<std::vector<uint64_t>> amt;
         if (!amounts.isEmpty())
             amt = std::vector<uint64_t>(amounts.begin(), amounts.end());
-        return wrap(m_w->createTransactionMultDest(d, amt, std::nullopt /* BDX */, priority, account, {}));
+        std::optional<std::string> token;  // nullopt = BDX
+        if (!tokenId.isEmpty())
+            token = s(tokenId);
+        return wrap(m_w->createTransactionMultDest(d, amt, token, priority, account, {}));
     }
     std::unique_ptr<IPendingTx> createSweepAll(uint32_t priority, quint32 account) override
     {
         // "BDX": native coins only (no token id would sweep every privacy token too); no address: to ourselves.
         return wrap(m_w->createSweepAllTransaction(std::string("BDX"), std::nullopt, priority, account, {}));
+    }
+    std::unique_ptr<IPendingTx> sweep(const QString &what, const QString &address, uint32_t priority,
+                                      quint32 account) override
+    {
+        // core: nullopt = BDX and every token, "BDX" = native only, hex id = that token only
+        std::optional<std::string> mode;
+        if (what.compare(QLatin1String("bdx"), Qt::CaseInsensitive) == 0)
+            mode = std::string("BDX");
+        else if (what != QLatin1String("all"))
+            mode = s(what);
+        std::optional<std::string> dst;
+        if (!address.isEmpty())
+            dst = s(address);
+        return wrap(m_w->createSweepAllTransaction(mode, dst, priority, account, {}));
     }
     quint64 estimateFee(uint32_t priority, quint32 recipients) const override
     {
@@ -305,6 +328,36 @@ public:
         std::string owner = s(r.owner), backup = s(r.backupOwner), bchat = s(r.bchat), wallet = s(r.wallet),
                     belnet = s(r.belnet), eth = s(r.eth), name = s(r.name);
         return wrap(m_w->bnsUpdateTransaction(owner, backup, bchat, wallet, belnet, eth, name, 0, account, {}));
+    }
+
+    std::vector<TokenBalance> tokenBalances(quint32 account) override
+    {
+        std::vector<TokenBalance> out;
+        for (const auto &t : m_w->tokenBalances(account))
+            out.push_back({q(t.tokenId), q(t.ticker), t.balance, t.unlockedBalance, int(t.decimalPoint)});
+        return out;
+    }
+    std::vector<TokenInfo> knownTokens() override { return {}; }
+    std::unique_ptr<IPendingTx> registerToken(const QString &json, QString *tokenId, uint32_t priority,
+                                              quint32 account) override
+    {
+        std::string id;
+        auto tx = wrap(m_w->registerPrivacyTokenTransaction(s(json), id, priority, account, {}));
+        if (tokenId)
+            *tokenId = q(id);
+        return tx;
+    }
+    std::unique_ptr<IPendingTx> mintToken(const QString &id, quint64 amount, uint32_t priority, quint32 account) override
+    {
+        return wrap(m_w->mintTokenTransaction(s(id), amount, priority, account, {}));
+    }
+    std::unique_ptr<IPendingTx> burnToken(const QString &id, quint64 amount, uint32_t priority, quint32 account) override
+    {
+        return wrap(m_w->burnTokenTransaction(s(id), amount, priority, account, {}));
+    }
+    std::unique_ptr<IPendingTx> updateToken(const QString &id, const QString &json, uint32_t priority) override
+    {
+        return wrap(m_w->updateTokenTransaction(s(id), s(json), priority, 0, {}));
     }
 
     QString signMessage(const QString &m) override { return q(m_w->signMessage(s(m))); }

@@ -42,6 +42,34 @@ BdxPage {
         }
     }
 
+    // Testnet: privacy token balances of this account.
+    Panel {
+        title: "Privacy tokens"
+        note: page.w.tokens.length + " held"
+        visible: page.w.tokensEnabled
+        Layout.fillWidth: true
+        headerExtra: BdxButton { compact: true; text: "Manage"; onClicked: App.go("tokens") }
+        Flow {
+            Layout.fillWidth: true
+            spacing: 28
+            Repeater {
+                model: page.w.tokens
+                delegate: Row {
+                    required property var modelData
+                    spacing: 8
+                    Mono { text: App.money(modelData.balance); color: Theme.green; font.bold: true; font.pixelSize: 15 }
+                    Mono { text: modelData.ticker; color: Theme.textDim; font.pixelSize: 15 }
+                }
+            }
+            Mono {
+                visible: page.w.tokens.length === 0
+                text: "No tokens in this account yet — create one or receive some at your address."
+                color: Theme.textFaint
+                font.italic: true
+            }
+        }
+    }
+
     RowLayout {
         Layout.fillWidth: true
         spacing: 22
@@ -57,6 +85,7 @@ BdxPage {
             TxTable {
                 Layout.fillWidth: true
                 model: page.w.recentTransactions
+                showUnits: page.w.tokensEnabled
                 scrollable: false
                 emptyText: page.w.synchronized ? "No transactions yet — share your address to receive BDX" : "Transactions appear as the wallet syncs"
                 onActivated: tx => App.showTx(tx)

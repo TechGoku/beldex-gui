@@ -52,6 +52,9 @@ QtObject {
         case "out": return text
         case "stake": return blue
         case "bns": return amber
+        case "token-register": case "token-mint": return green
+        case "token-burn": return red
+        case "token-update": return blue
         }
         return textDim
     }
@@ -63,6 +66,10 @@ QtObject {
         case "miner": return "MINER REWARD"
         case "stake": return "STAKE"
         case "bns": return "BNS"
+        case "token-register": return "NEW TOKEN"
+        case "token-mint": return "MINTED"
+        case "token-burn": return "BURNED"
+        case "token-update": return "UPDATED"
         }
         return kind.toUpperCase()
     }

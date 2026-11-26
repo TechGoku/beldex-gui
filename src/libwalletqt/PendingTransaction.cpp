@@ -13,7 +13,10 @@ PendingTransaction::PendingTransaction(std::unique_ptr<bdx::IPendingTx> tx, QStr
 
 PendingTransaction::~PendingTransaction() = default;
 
-QString PendingTransaction::amount() const { return bdx::formatAtomic(m_tx ? m_tx->amount() : 0, 9); }
+QString PendingTransaction::amount() const
+{
+    return m_unit == QLatin1String("BDX") ? bdx::formatAtomic(m_tx ? m_tx->amount() : 0, 9) : m_amountText;
+}
 QString PendingTransaction::fee() const { return bdx::formatAtomic(m_tx ? m_tx->fee() : 0, 9); }
 QString PendingTransaction::total() const
 {
