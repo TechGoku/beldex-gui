@@ -62,7 +62,7 @@ jobs:
           cmake --build build-demo
           QT_QPA_PLATFORM=offscreen BELDEX_GUI_SHOTS=shots ./build-demo/beldex-wallet-gui | tee tour.log
           ! grep -E 'FAIL|qrc:.*(Error|Unable|unavailable)' tour.log
-          QT_QPA_PLATFORM=offscreen BELDEX_GUI_TOUR=tokens BELDEX_GUI_SHOTS=shots-tokens ./build-demo/beldex-wallet-gui | tee tour-tokens.log
+          QT_QPA_PLATFORM=offscreen BELDEX_GUI_TOUR=tokens BELDEX_GUI_SHOTS=shots-tokens ./build-demo/beldex-wallet-gui 2>&1 | tee tour-tokens.log
           ! grep -E 'FAIL|qrc:.*(Error|Unable|unavailable)' tour-tokens.log
           grep -q 'tour: OK' tour-tokens.log
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$QT_DIR
