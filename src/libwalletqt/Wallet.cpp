@@ -223,7 +223,7 @@ void Wallet::run(const QString &busyText, std::function<R(IWallet &)> work, std:
         if (!r.second.isEmpty()) {
             qWarning("wallet: %s", qPrintable(r.second));
             if (!busyText.isEmpty())      // user-initiated: tell them; background polls stay quiet
-                emit error(friendlyError(r.second));
+                emit error(explainTxError(r.second));
         }
         if (done)
             done(std::move(r.first));
@@ -848,13 +848,29 @@ QString Wallet::makePaymentUri(const QString &address, const QString &amount, co
 
 // --- send ------------------------------------------------------------------------------------
 
+// Core's "not enough money … available only 0" also happens when the funds are there but still locked: every
+// transaction locks its change (and anything received) for 10 blocks. Say so when part of the balance is locked.
+QString Wallet::explainTxError(const QString &raw) const
+{
+    QString msg = friendlyError(raw);
+    if ((msg.contains(QLatin1String("not enough money"), Qt::CaseInsensitive) ||
+         msg.contains(QLatin1String("not enough unlocked"), Qt::CaseInsensitive) ||
+         msg.contains(QLatin1String("No unlocked balance"), Qt::CaseInsensitive)) &&
+        m_balance > m_unlocked)
+        msg += QStringLiteral("\n") +
+               tr("%1 BDX of this account is still locked: change and received funds unlock 10 blocks (about 5 minutes) "
+                  "after their transaction. Try again then.")
+                   .arg(lockedBalance());
+    return msg;
+}
+
 void Wallet::emitCreated(std::unique_ptr<IPendingTx> tx, const QString &kind, const QStringList &dests, bool flash,
                          const QString &note, const QString &tokenId, const QString &unit, const QString &amountText)
 {
     if (!tx)
         return;  // the call threw; run() already reported it
     if (!tx->ok()) {
-        emit error(tx->errorString());
+        emit error(explainTxError(tx->errorString()));
         return;
     }
     auto *p = new PendingTransaction(std::move(tx), kind, dests, flash, note, this);
@@ -987,16 +1003,30 @@ void Wallet::commitTransaction(PendingTransaction *tx)
     const bool flash = tx->flash();
     const QString tokenOpId = tx->kind().startsWith(QLatin1String("token-")) ? tx->tokenId() : QString();
     QPointer<PendingTransaction> guard(tx);
-    run<std::pair<bool, QString>>(tr("Broadcasting transaction…"),
-                                  [raw, flash](IWallet &w) {
-                                      const bool ok = raw->commit(flash);
-                                      if (ok)
+    struct Sent {
+        bool ok = false;
+        QString error;
+        QStringList ids;
+    };
+    run<Sent>(tr("Broadcasting transaction…"),
+                                  [raw, flash, tokenOpId](IWallet &w) {
+                                      Sent r;
+                                      r.ids = raw->txids();   // core empties the pending transaction on commit
+                                      r.ok = raw->commit(flash);
+                                      if (r.ok) {
+                                          // History can't name the token of an update (it has no token outputs).
+                                          for (const QString &id : std::as_const(r.ids))
+                                              if (!tokenOpId.isEmpty())
+                                                  w.setAttribute(QStringLiteral("beldex-gui.token-op.") + id, tokenOpId);
                                           w.store();
-                                      return std::make_pair(ok, ok ? QString() : raw->errorString());
+                                      } else {
+                                          r.error = raw->errorString();
+                                      }
+                                      return r;
                                   },
-                                  [this, guard, tokenOpId](std::pair<bool, QString> r) {
-                                      const QStringList ids = guard ? guard->raw()->txids() : QStringList{};
-                                      if (r.first && !tokenOpId.isEmpty() && !m_engine->isDemo()) {
+                                  [this, guard, tokenOpId](Sent r) {
+                                      const QStringList ids = r.ids;
+                                      if (r.ok && !tokenOpId.isEmpty() && !m_engine->isDemo()) {
                                           // The registry changes once the transaction is in a block (~30 s each).
                                           QPointer<Wallet> self(this);
                                           for (int ms : {40000, 100000, 200000})
@@ -1005,7 +1035,7 @@ void Wallet::commitTransaction(PendingTransaction *tx)
                                                       self->m_registry->refreshToken(tokenOpId);
                                               });
                                       }
-                                      emit transactionCommitted(r.first, r.first ? tr("Transaction sent") : r.second, ids);
+                                      emit transactionCommitted(r.ok, r.ok ? tr("Transaction sent") : r.error, ids);
                                       if (guard)
                                           guard->deleteLater();
                                       refreshAll();
@@ -1292,6 +1322,12 @@ void Wallet::applyTokenBalances(const std::vector<TokenBalance> &balances)
     QVariantList out;
     for (const auto &b : balances) {
         const auto reg = m_registry->info(b.tokenId);
+        // A token we hold but the registry doesn't know yet (registered since it was read, e.g. one we just
+        // created): ask the node now, so owner actions (mint, update) work without waiting for the daily read.
+        if (!reg && !m_metaRequested.contains(b.tokenId)) {
+            m_metaRequested.insert(b.tokenId);
+            m_registry->refreshToken(b.tokenId);
+        }
         out << QVariantMap{{"tokenId", b.tokenId},
                            {"ticker", !b.ticker.isEmpty() ? b.ticker : reg ? reg->ticker : b.tokenId.left(8) + QStringLiteral("…")},
                            {"fullName", reg ? reg->fullName : QString()},
@@ -1434,7 +1470,8 @@ void Wallet::registerToken(const QVariantMap &f)
             bdx::formatUnits(*supply, decimals, decimals),
             tr("Registers %1 (%2): max supply %3, %4 decimals. The initial supply is sent to this wallet; only "
                "this wallet can mint more. Registering costs 100 BDX on testnet (50 burned, 50 to governance) on top "
-               "of the network fee.")
+               "of the network fee, and locks another 100 BDX of this wallet as collateral for 518,400 blocks "
+               "(about 6 months); it comes back to this wallet after that.")
                 .arg(ticker, name, bdx::formatUnits(*maxSupply, decimals, decimals))
                 .arg(decimals));
 }

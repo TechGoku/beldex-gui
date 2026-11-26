@@ -245,6 +245,7 @@ private:
     void act(std::function<void(bdx::IWallet &)> change, int refreshMask);
     void pollStatus();
     void reloadBalances();
+    QString explainTxError(const QString &raw) const;
     void reloadHistory();
     void reloadSubaddresses();
     void reloadAddressBook();

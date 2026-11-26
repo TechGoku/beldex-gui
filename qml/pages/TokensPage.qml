@@ -245,7 +245,7 @@ BdxPage {
                                                       maxSupply: maxSupply.text, supply: supply.text, metaInfo: meta.text })
                 }
                 Mono {
-                    text: "Costs 100 BDX on testnet (50 burned, 50 to governance) plus the network fee. Minting burns 5 BDX, updating 1 BDX, burning is free. The ticker, name, decimals and maximum supply are fixed once registered; this wallet becomes the owner and alone can mint more or change the metadata."
+                    text: "Costs 100 BDX on testnet (50 burned, 50 to governance) plus the network fee, and locks another 100 BDX as collateral for about 6 months (518,400 blocks), so 200+ unlocked BDX are needed. Minting burns 5 BDX, updating 1 BDX, burning is free. The ticker, name, decimals and maximum supply are fixed once registered; this wallet becomes the owner and alone can mint more or change the metadata."
                     color: Theme.textFaint
                     font.pixelSize: 11
                     wrapMode: Text.WordWrap

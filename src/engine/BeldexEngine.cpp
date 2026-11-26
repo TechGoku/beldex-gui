@@ -218,6 +218,9 @@ public:
             else if (pay == "mint") r.kind = TxRecord::Kind::TokenMint;
             else if (pay == "burn_token") r.kind = TxRecord::Kind::TokenBurn;
             else if (pay == "update") r.kind = TxRecord::Kind::TokenUpdate;
+            // Core can't tell which token an update (no token outputs) was for; the app notes it when sending.
+            if (r.tokenId.isEmpty() && r.kind == TxRecord::Kind::TokenUpdate)
+                r.tokenId = q(m_w->getCacheAttribute("beldex-gui.token-op." + t->hash()));
             for (auto i : t->subaddrIndex())
                 r.subaddrIndices << i;
             for (const auto &tr : t->transfers())

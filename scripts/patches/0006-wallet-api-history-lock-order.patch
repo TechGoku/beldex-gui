@@ -1,0 +1,14 @@
+diff --git a/src/wallet/api/transaction_history.cpp b/src/wallet/api/transaction_history.cpp
+--- a/src/wallet/api/transaction_history.cpp
++++ b/src/wallet/api/transaction_history.cpp
+@@ -109,6 +109,10 @@
+ EXPORT
+ void TransactionHistoryImpl::refresh()
+ {
++    // Lock order: the wallet (refresh) lock first, then the history lock -- the order WalletImpl::doRefresh
++    // uses (it holds the wallet lock and calls count()). Taking the history lock first deadlocked when a
++    // history refresh from another thread raced a scan. (The lock is recursive: wallet() below is fine.)
++    auto wallet_lock = m_wallet->wallet();
+     // multithreaded access:
+     // for "write" access, locking exclusively
+     std::unique_lock lock{m_historyMutex};

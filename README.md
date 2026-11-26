@@ -115,7 +115,7 @@ neither, because mainnet has no tokens yet. It covers what the CLI's token comma
 account), `transfer <token_id:address>`, `sweep_all bdx:/token_id:/address`, `register_privacy_token`, `mint_token`,
 `burn_token`, `update_token` (metadata and owner) and `tokens_by_owner`. Token amounts use each token's own decimals; the
 network fee is always BDX, and core adds protocol fees on testnet: registering costs 100 BDX (50 burned, 50 to
-governance), minting burns 5 BDX, updating 1 BDX, burning is free. History shows token transfers in their own units with the token id in the details. Core's
+governance) and locks another 100 BDX of the wallet as collateral for 518,400 blocks (about 6 months), minting burns 5 BDX, updating 1 BDX, burning is free. History shows token transfers in their own units with the token id in the details. Core's
 `TokensByOwner` asks the node about every token one at a time (about 4 minutes for the ~670 testnet tokens, with the
 wallet blocked), so the app reads the registry itself, six requests at a time (about a minute), keeps a copy in the app
 data folder, re-reads it once a day, and filters it by owner locally.
@@ -196,7 +196,11 @@ folder, connect a new wallet to it, and check that quitting stops it.
 Privacy tokens: `BELDEX_GUI_TOUR=tokens` in a demo build runs every token action (balances, send, sweep, register, mint,
 burn, update, owner lookup, history units) and checks a mainnet wallet shows none; CI runs it. `BELDEX_GUI_TOUR=tokens-real`
 in a real build syncs a new testnet wallet, reads the live registry and calls core's token functions up to (not
-including) broadcasting.
+including) broadcasting. `BELDEX_GUI_TOUR=tokens-chain` makes real, funded token transactions on a private testnet:
+wallet A (`BELDEX_GUI_TOUR_SEED_A`, 250+ unlocked BDX) registers a token, mints, sends some to wallet B
+(`BELDEX_GUI_TOUR_SEED_B`), burns, updates the metadata, sweeps the rest to B and hands B ownership; then B must hold the
+tokens and be able to mint. Point it at the node with `BELDEX_GUI_TOUR_NODE` (default `127.0.0.1:28081`; something must be
+mining) and set `XDG_CONFIG_HOME`/`XDG_DATA_HOME` to a scratch folder, since it changes the testnet node setting.
 
 Other real-build checks: `BELDEX_GUI_TOUR=midscan` (seed, subaddress and close during a scan, then resume),
 `BELDEX_GUI_TOUR=resume` (restored wallet closed before its first scan; rescan from height).
@@ -215,6 +219,11 @@ automatically, and they should go upstream:
 - **`0005`: wallet_api history doesn't say which token moved.** `TransactionInfo` has no token id, so a token transfer
   looked like a BDX amount. The patch adds `tokenId()` and `payType()` (and a token id per transfer), filled from
   `wallet2::make_transfer_view` exactly as the CLI's `show_transfers` does.
+
+- **`0006`: history refresh and the scan could deadlock.** `WalletImpl::doRefresh` holds the wallet (refresh) lock and
+  then reads the history size (history lock); `TransactionHistoryImpl::refresh()` took the history lock first and then the
+  wallet lock. A history reload from another thread that raced a scan froze both for good (the wallet stopped syncing).
+  On a busy chain it happened right after sending a transaction. The patch takes the wallet lock first in `refresh()`.
 
 - **`WalletImpl::stop()` couldn't stop a scan.** It took the refresh lock that the scan holds for its whole duration,
   then set `wallet2`'s atomic stop flag, so it only returned once the scan had finished. The patch sets the flag without

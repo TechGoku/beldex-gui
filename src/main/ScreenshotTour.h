@@ -12,7 +12,10 @@
 #include "libwalletqt/TokenRegistry.h"
 #include "libwalletqt/WalletManager.h"
 
+#include <QDateTime>
 #include <QDir>
+#include <QJsonDocument>
+#include <QSet>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
@@ -270,6 +273,33 @@ public:
         auto *app = m_engine.singletonInstance<QObject *>("BeldexGui", "App");
         if (auto *settings = app ? app->property("settings").value<QObject *>() : nullptr)
             settings->setProperty(name, v);
+    }
+
+    // BELDEX_GUI_TOUR=history-dump BELDEX_GUI_TOUR_WALLET=<path> BELDEX_GUI_TOUR_PASSWORD=<pw>: open a wallet, let it
+    // sync, and print every history row the app shows (above BELDEX_GUI_TOUR_RESTORE_HEIGHT, if set).
+    void startHistoryDump()
+    {
+        const QString path = qEnvironmentVariable("BELDEX_GUI_TOUR_WALLET");
+        const QString pw = qEnvironmentVariable("BELDEX_GUI_TOUR_PASSWORD");
+        const int net = qEnvironmentVariableIntValue("BELDEX_GUI_TOUR_NET");
+        step(500, [this, path, pw, net] { m_mgr.openWallet(path, pw, net); });
+        step(4000, [this] { waitSynced(0, 200, [this] { m_mgr.wallet()->refreshAll(); }); });
+        step(4000, [this] {
+            auto *w = m_mgr.wallet();
+            const double from = qEnvironmentVariableIntValue("BELDEX_GUI_TOUR_RESTORE_HEIGHT");
+            for (int i = 0; w && i < w->history()->rowCount(); ++i) {
+                const QVariantMap r = w->history()->get(i);
+                if (r.value("height").toDouble() < from && !r.value("pending").toBool())
+                    continue;
+                qInfo("tour: row h=%.0f kind=%s in=%d amount=%s %s token=%s fee=%s tx=%s", r.value("height").toDouble(),
+                      qPrintable(r.value("kind").toString()), r.value("incoming").toBool(), qPrintable(r.value("amount").toString()),
+                      qPrintable(r.value("unit").toString()), qPrintable(r.value("tokenId").toString().left(12)),
+                      qPrintable(r.value("fee").toString()), qPrintable(r.value("hash").toString().left(12)));
+            }
+            m_mgr.closeWallet();
+            QCoreApplication::exit(0);
+        });
+        next();
     }
 
     // BELDEX_GUI_TOUR=midscan: wallet actions and closing must not wait for a running scan to finish.
@@ -684,6 +714,373 @@ public:
         });
         next();
     }
+    // BELDEX_GUI_TOUR=tokens-chain (real build): real, funded token transactions on a private testnet.
+    //   BELDEX_GUI_TOUR_NODE       node RPC (default 127.0.0.1:28081); something must be mining on it
+    //   BELDEX_GUI_TOUR_SEED_A     funded testnet wallet (needs 250+ unlocked BDX: registering burns 100 and locks
+    //                              another 100 as collateral for ~6 months)
+    //   BELDEX_GUI_TOUR_SEED_B     second testnet wallet (receives tokens, then ownership)
+    //   BELDEX_GUI_TOUR_RESTORE_HEIGHT  where wallet A starts scanning (default 0)
+    // A registers a new token (checking the 100 BDX collateral is locked), mints, sends some to B, burns, updates its metadata, sweeps the rest to B and
+    // hands B ownership; then B is opened and must hold the tokens and be able to mint. Each step waits for
+    // the chain (balances unlocked, registry updated). Run with XDG_CONFIG_HOME/XDG_DATA_HOME set to a scratch
+    // folder: it changes the testnet node setting.
+    void startChainTokens()
+    {
+        const QString walletDir = QDir(m_out).filePath(QStringLiteral("wallets"));
+        QDir(walletDir).removeRecursively();
+        const QString node = qEnvironmentVariable("BELDEX_GUI_TOUR_NODE", QStringLiteral("127.0.0.1:28081"));
+        const QString seedA = qEnvironmentVariable("BELDEX_GUI_TOUR_SEED_A");
+        const QString seedB = qEnvironmentVariable("BELDEX_GUI_TOUR_SEED_B");
+        const double fromHeight = qEnvironmentVariableIntValue("BELDEX_GUI_TOUR_RESTORE_HEIGHT");
+        m_ticker = QStringLiteral("GT%1").arg(QDateTime::currentSecsSinceEpoch() % 1000000);
+        setAppSetting("testnetNodeMode", QStringLiteral("remote"));
+        setAppSetting("testnetNode", node);
+        qInfo("tour: node %s, new token %s", qPrintable(node), qPrintable(m_ticker));
+
+        step(500, [this, walletDir, seedA, fromHeight] {
+            m_mgr.restoreFromSeed(walletDir, QStringLiteral("a"), QStringLiteral("x"), seedA, 1, fromHeight, {});
+        });
+        step(5000, [this] {
+            auto *w = m_mgr.wallet();
+            check(w && w->netType() == 1 && w->tokensEnabled(), "wallet A open on testnet with tokens");
+            if (!w)
+                return;
+            watch(w);
+            setProp("page", "tokens");
+            waitSynced(0, 600, [this] { check(m_mgr.wallet()->synchronized(), "wallet A synced"); });
+        });
+        // The sends need B's address and spend key: restore B (from the current height), note them, back to A.
+        step(500, [this] {
+            auto *w = m_mgr.wallet();
+            m_startHeight = quint64(w->daemonHeight());
+            qInfo("tour:   A %s height %.0f, BDX %s unlocked of %s, tokens held: %lld", qPrintable(w->primaryAddress()),
+                  w->blockHeight(), qPrintable(w->unlockedBalance()), qPrintable(w->balance()), qlonglong(w->tokens().size()));
+            m_mgr.closeWallet();
+        });
+        step(2000, [this, walletDir, seedB] {
+            m_mgr.restoreFromSeed(walletDir, QStringLiteral("b"), QStringLiteral("x"), seedB, 1, double(m_startHeight), {});
+        });
+        step(1000, [this] { waitForQuiet([this] { return m_mgr.wallet() && m_mgr.wallet()->spendPublicKey().size() == 64; }, 120); });
+        step(200, [this] {
+            auto *w = m_mgr.wallet();
+            m_addrB = w ? w->primaryAddress() : QString();
+            m_keyB = w ? w->spendPublicKey() : QString();
+            qInfo("tour:   B address %s spend key %s", qPrintable(m_addrB), qPrintable(m_keyB));
+            check(!m_addrB.isEmpty() && m_keyB.size() == 64, "wallet B restored (address and spend key)");
+            m_mgr.closeWallet();
+        });
+        step(2000, [this, walletDir] { m_mgr.openWallet(QDir(walletDir).filePath(QStringLiteral("a/a")), QStringLiteral("x"), 1); });
+        step(4000, [this] {
+            auto *w = m_mgr.wallet();
+            check(w && w->netType() == 1, "wallet A reopened");
+            watch(w);
+            setProp("page", "tokens");
+            waitFor([this] { return bdx(m_mgr.wallet()->unlockedBalance()) >= 250; }, 300, "A has 250+ unlocked BDX");
+        });
+        step(200, [this] { waitBdx(); });
+        step(500, [this] {
+            auto *w = m_mgr.wallet();
+            qInfo("tour:   A BDX unlocked %s", qPrintable(w->unlockedBalance()));
+            clearTx();
+            w->registerToken({{"ticker", m_ticker}, {"fullName", "GUI test token"}, {"decimals", "2"}, {"maxSupply", "1000000"},
+                              {"supply", "1000"}, {"metaInfo", "made by the beldex-gui tokens-chain tour"}});
+            waitTx();
+        });
+        step(200, [this] {
+            check(m_tx && m_tx->kind() == QLatin1String("token-register") && m_tx->unit() == m_ticker && m_tx->tokenId().size() == 64,
+                  "register: transaction built with ticker and token id");
+            if (!m_tx)
+                return;
+            m_tokId = m_tx->tokenId();
+            qInfo("tour:   token id %s, fee %s BDX", qPrintable(m_tokId), qPrintable(m_tx->fee()));
+            shot("chain-confirm-register");
+            commitAndWait();
+        });
+        step(200, [this] {
+            check(m_commitOk == 1, "register: broadcast accepted by the node");
+            waitFor([this] { return held(m_ticker, true) == QLatin1String("1,000.00"); }, 600, "A holds 1,000.00 (initial supply, unlocked)");
+        });
+        // The app asks the node about a held token it doesn't know yet; that takes a moment after it arrives.
+        step(200, [this] { waitFor([this] { return !supply().isEmpty(); }, 60, "the app looks up the new token in the registry"); });
+        step(200, [this] { waitBdx(); });
+        step(200, [this] {
+            auto *w = m_mgr.wallet();
+            const QVariantMap t = w->tokenRegistry()->get(m_tokId);
+            qInfo("tour:   registry: %s", qPrintable(QString::fromUtf8(QJsonDocument::fromVariant(t).toJson(QJsonDocument::Compact))));
+            check(t.value("ticker") == m_ticker && t.value("fullName") == QLatin1String("GUI test token"), "registry has ticker and name");
+            check(t.value("owner").toString().compare(w->spendPublicKey(), Qt::CaseInsensitive) == 0, "registry owner is wallet A");
+            check(t.value("supply") == QLatin1String("1,000.00") && t.value("decimals").toInt() == 2, "registry supply 1,000.00, 2 decimals");
+            bool owned = false;
+            for (const auto &v : w->ownedTokens())
+                owned = owned || v.toMap().value("tokenId") == m_tokId;
+            check(owned, "token listed under Your tokens");
+            const double locked = bdx(w->lockedBalance());
+            qInfo("tour:   A BDX locked after registering: %s", qPrintable(w->lockedBalance()));
+            check(locked >= 100, "registration locks 100 BDX of collateral");
+            clearTx();
+            w->mintToken(m_tokId, QStringLiteral("500"));
+            waitTx();
+        });
+        step(200, [this] {
+            check(m_tx && m_tx->kind() == QLatin1String("token-mint") && m_tx->unit() == m_ticker, "mint: transaction built");
+            commitAndWait();
+        });
+        step(200, [this] {
+            check(m_commitOk == 1, "mint: broadcast accepted");
+            waitFor([this] { return held(m_ticker, true) == QLatin1String("1,500.00") && supply() == QLatin1String("1,500.00"); }, 600,
+                    "A holds 1,500.00 and supply is 1,500.00");
+        });
+        step(200, [this] { waitBdx(); });
+        step(200, [this] {
+            clearTx();
+            m_mgr.wallet()->createTransaction({QVariantMap{{"address", m_addrB}, {"amount", QStringLiteral("250.5")}}}, false, m_tokId);
+            waitTx();
+        });
+        step(200, [this] {
+            check(m_tx && m_tx->unit() == m_ticker && m_tx->tokenId() == m_tokId, "send 250.5 to B: transaction built in token units");
+            if (m_tx)
+                qInfo("tour:   confirm shows %s %s, fee %s BDX", qPrintable(m_tx->amount()), qPrintable(m_tx->unit()), qPrintable(m_tx->fee()));
+            shot("chain-confirm-send");
+            commitAndWait();
+        });
+        step(200, [this] {
+            check(m_commitOk == 1, "token send: broadcast accepted");
+            waitFor([this] { return held(m_ticker, true) == QLatin1String("1,249.50"); }, 600, "A holds 1,249.50 after sending 250.50");
+        });
+        step(200, [this] { waitBdx(); });
+        step(200, [this] {
+            clearTx();
+            m_mgr.wallet()->createTransaction({QVariantMap{{"address", m_addrB}, {"amount", QStringLiteral("20")}}}, false);
+            waitTx();
+        });
+        step(200, [this] { check(m_tx && m_tx->unit() == QLatin1String("BDX"), "send 20 BDX to B: built"); commitAndWait(); });
+        step(200, [this] { waitBdx(); });
+        step(200, [this] {
+            check(m_commitOk == 1, "BDX send: broadcast accepted");
+            clearTx();
+            m_mgr.wallet()->burnToken(m_tokId, QStringLiteral("49.5"));
+            waitTx();
+        });
+        step(200, [this] { check(m_tx && m_tx->kind() == QLatin1String("token-burn"), "burn 49.5: transaction built"); commitAndWait(); });
+        step(200, [this] {
+            check(m_commitOk == 1, "burn: broadcast accepted");
+            waitFor([this] { return held(m_ticker, true) == QLatin1String("1,200.00"); }, 600, "A holds 1,200.00 after burning 49.50");
+        });
+        step(3000, [this] {
+            m_mgr.wallet()->tokenRegistry()->refreshToken(m_tokId);
+        });
+        step(200, [this] { waitBdx(); });
+        step(3000, [this] {
+            qInfo("tour:   supply after burn: %s", qPrintable(supply()));
+            check(supply() == QLatin1String("1,450.50"), "burn lowers the supply to 1,450.50");
+            clearTx();
+            m_mgr.wallet()->updateToken(m_tokId, QStringLiteral("updated by the beldex-gui tokens-chain tour"), {});
+            waitTx();
+        });
+        step(200, [this] { check(m_tx && m_tx->kind() == QLatin1String("token-update"), "update metadata: transaction built"); commitAndWait(); });
+        step(200, [this] {
+            check(m_commitOk == 1, "update: broadcast accepted");
+            waitFor([this] {
+                m_mgr.wallet()->tokenRegistry()->refreshToken(m_tokId);
+                return m_mgr.wallet()->tokenRegistry()->get(m_tokId).value("metaInfo") ==
+                       QLatin1String("updated by the beldex-gui tokens-chain tour");
+            }, 600, "registry shows the new metadata");
+        });
+        step(200, [this] {
+            setProp("page", "history");
+            m_mgr.wallet()->refreshAll();
+        });
+        step(200, [this] { waitBdx(); });
+        step(2000, [this] {
+            auto *w = m_mgr.wallet();
+            QSet<QString> kinds;
+            bool outInUnits = false;
+            for (int i = 0; i < w->history()->rowCount(); ++i) {
+                const QVariantMap r = w->history()->get(i);
+                if (r.value("tokenId") != m_tokId)
+                    continue;
+                kinds << r.value("kind").toString();
+                qInfo("tour:   history %-15s %s %s", qPrintable(r.value("kind").toString()), qPrintable(r.value("amount").toString()),
+                      qPrintable(r.value("unit").toString()));
+                outInUnits = outInUnits || (r.value("kind") == QLatin1String("out") && r.value("unit") == m_ticker);
+            }
+            check(kinds.contains("token-register") && kinds.contains("token-mint") && kinds.contains("token-burn") &&
+                      kinds.contains("token-update"), "history lists register, mint, burn and update");
+            check(outInUnits, "history shows the token send in token units");
+            shot("chain-history-a");
+            setProp("page", "tokens");
+            clearTx();
+            w->sweep(m_tokId, m_addrB, false);
+            waitTx();
+        });
+        step(1500, [this] {
+            shot("chain-confirm-sweep");
+            check(m_tx && m_tx->kind() == QLatin1String("sweep") && m_tx->unit() == m_ticker, "sweep token to B: transaction built");
+            commitAndWait();
+        });
+        step(200, [this] {
+            check(m_commitOk == 1, "sweep: broadcast accepted");
+            waitFor([this] { const QString h = held(m_ticker, false); return h.isEmpty() || h == QLatin1String("0.00"); }, 600,
+                    "A holds none after the sweep");
+        });
+        step(200, [this] { waitBdx(); });
+        step(200, [this] {
+            clearTx();
+            m_mgr.wallet()->updateToken(m_tokId, QStringLiteral("updated by the beldex-gui tokens-chain tour"), m_addrB);
+            waitTx();
+        });
+        step(200, [this] { check(m_tx && m_tx->kind() == QLatin1String("token-update"), "hand ownership to B: transaction built"); commitAndWait(); });
+        step(200, [this] {
+            check(m_commitOk == 1, "ownership update: broadcast accepted");
+            waitFor([this] {
+                m_mgr.wallet()->tokenRegistry()->refreshToken(m_tokId);
+                return m_mgr.wallet()->tokenRegistry()->get(m_tokId).value("owner").toString().compare(m_keyB, Qt::CaseInsensitive) == 0;
+            }, 600, "registry owner is now B");
+        });
+        step(3000, [this] {
+            bool owned = false;
+            for (const auto &v : m_mgr.wallet()->ownedTokens())
+                owned = owned || v.toMap().value("tokenId") == m_tokId;
+            check(!owned, "A no longer lists the token as its own");
+            shot("chain-tokens-a");
+            m_mgr.closeWallet();
+        });
+        step(2000, [this, walletDir] { m_mgr.openWallet(QDir(walletDir).filePath(QStringLiteral("b/b")), QStringLiteral("x"), 1); });
+        step(4000, [this] {
+            auto *w = m_mgr.wallet();
+            check(w && w->primaryAddress() == m_addrB, "wallet B open");
+            watch(w);
+            setProp("page", "tokens");
+            waitFor([this] { return held(m_ticker, true) == QLatin1String("1,450.50") && bdx(m_mgr.wallet()->unlockedBalance()) >= 20; },
+                    900, "B holds 1,450.50 of the token and 20 BDX, unlocked");
+        });
+        step(200, [this] { waitBdx(); });
+        step(3000, [this] {
+            auto *w = m_mgr.wallet();
+            bool owned = false;
+            for (const auto &v : w->ownedTokens())
+                owned = owned || v.toMap().value("tokenId") == m_tokId;
+            check(owned, "B lists the token as its own");
+            int in = 0;
+            for (int i = 0; i < w->history()->rowCount(); ++i) {
+                const QVariantMap r = w->history()->get(i);
+                if (r.value("tokenId") == m_tokId && r.value("incoming").toBool() && r.value("unit") == m_ticker)
+                    ++in;
+            }
+            check(in >= 2, "B's history shows the 2 incoming token transfers in token units");
+            shot("chain-tokens-b");
+            clearTx();
+            w->mintToken(m_tokId, QStringLiteral("1"));
+            waitTx();
+        });
+        step(200, [this] { check(m_tx && m_tx->kind() == QLatin1String("token-mint"), "B (new owner) can mint: built"); commitAndWait(); });
+        step(200, [this] {
+            check(m_commitOk == 1, "B's mint: broadcast accepted");
+            waitFor([this] { return held(m_ticker, true) == QLatin1String("1,451.50"); }, 600, "B holds 1,451.50 after minting 1");
+        });
+        step(1000, [this] {
+            shot("chain-done");
+            m_mgr.closeWallet();
+            qInfo("tour: UI stalls >300ms: %d, longest %lld ms", m_stalls, m_maxStall);
+            qInfo("tour: %s (%d failure%s)", m_failures ? "FAILED" : "OK", m_failures, m_failures == 1 ? "" : "s");
+            QCoreApplication::exit(m_failures ? 1 : 0);
+        });
+        next();
+    }
+    // Polls `done` every 3 s (up to maxSec), records the check, then resumes the tour.
+    void waitFor(std::function<bool()> done, int maxSec, const char *what, int waited = 0)
+    {
+        m_hold = true;
+        const bool ok = m_mgr.wallet() && done();
+        if (ok || waited >= maxSec) {
+            qInfo("tour:   (%d s)", waited);
+            check(ok, what);
+            m_hold = false;
+            if (!ok)
+                return stopTour();
+            if (waited > 0)   // finished on the first poll: the step itself goes on
+                next();
+            return;
+        }
+        // Debug aid: BELDEX_GUI_TOUR_ABORT_ON_STALL=1 aborts (for a debugger) once the wallet height stops moving for 60 s.
+        if (auto *w = m_mgr.wallet(); w && qEnvironmentVariableIsSet("BELDEX_GUI_TOUR_ABORT_ON_STALL")) {
+            const quint64 h = quint64(w->blockHeight());
+            m_stuckSec = h == m_lastHeight ? m_stuckSec + 3 : 0;
+            m_lastHeight = h;
+            if (m_stuckSec >= 60) {
+                qWarning("tour: wallet height stuck at %llu for 60 s (node %.0f), aborting", (unsigned long long)h, w->daemonHeight());
+                std::abort();
+            }
+        }
+        if (waited % 30 == 0 && m_mgr.wallet())
+            qInfo("tour:   waiting: %s (height %.0f, %s held %s)", what, m_mgr.wallet()->blockHeight(), qPrintable(m_ticker),
+                  qPrintable(held(m_ticker, false)));
+        QTimer::singleShot(3000, this, [this, done, maxSec, what, waited] { waitFor(done, maxSec, what, waited + 3); });
+    }
+    // Every transaction locks its BDX change for 10 blocks; wait until some BDX is unlocked for the next fee.
+    void waitBdx()
+    {
+        waitForQuiet([this] { return bdx(m_mgr.wallet()->unlockedBalance()) >= 10; }, 300);
+    }
+    void clearTx()
+    {
+        m_tx = nullptr;
+        m_lastError.clear();
+    }
+    // Waits for the wallet action started after clearTx() to give a transaction or an error.
+    void waitTx()
+    {
+        waitForQuiet([this] { return m_tx || !m_lastError.isEmpty(); }, 120);
+    }
+    void commitAndWait()
+    {
+        m_commitOk = -1;
+        if (!m_tx) {
+            check(false, qPrintable(QStringLiteral("transaction built (wallet error: %1)").arg(m_lastError)));
+            return stopTour();
+        }
+        m_mgr.wallet()->commitTransaction(m_tx);
+        m_tx = nullptr;
+        waitForQuiet([this] { return m_commitOk != -1; }, 120);
+    }
+    // A chain step failed: later steps depend on it, so stop here.
+    void stopTour()
+    {
+        m_i = m_steps.size();
+        m_hold = true;
+        if (m_mgr.walletOpen())
+            m_mgr.closeWallet();
+        qInfo("tour: FAILED (%d failure%s)", m_failures, m_failures == 1 ? "" : "s");
+        QCoreApplication::exit(1);
+    }
+    // Like waitFor, without recording a check (the next step checks the outcome).
+    void waitForQuiet(std::function<bool()> done, int maxSec, int waited = 0)
+    {
+        m_hold = true;
+        if (done() || waited >= maxSec) {
+            m_hold = false;
+            if (waited > 0)
+                next();
+            return;
+        }
+        QTimer::singleShot(1000, this, [this, done, maxSec, waited] { waitForQuiet(done, maxSec, waited + 1); });
+    }
+    // Balance of a token by ticker ("" if not held); unlockedOnly: only once all of it is unlocked.
+    QString held(const QString &ticker, bool unlockedOnly)
+    {
+        for (const auto &v : m_mgr.wallet()->tokens()) {
+            const QVariantMap m = v.toMap();
+            if (m.value("ticker") == ticker)
+                return unlockedOnly && m.value("locked").toBool() ? QString() : m.value("balance").toString();
+        }
+        return {};
+    }
+    QString supply()
+    {
+        return m_mgr.wallet()->tokenRegistry()->get(m_tokId).value("supply").toString();
+    }
+    static double bdx(QString formatted) { return formatted.remove(QLatin1Char(',')).toDouble(); }
+
     void waitRegistry(int i)
     {
         m_hold = true;
@@ -702,6 +1099,10 @@ public:
     void watch(Wallet *w)
     {
         connect(w, &Wallet::transactionCreated, this, [this](PendingTransaction *tx) { m_tx = tx; });
+        connect(w, &Wallet::transactionCommitted, this, [this](bool ok, const QString &msg, const QStringList &ids) {
+            m_commitOk = ok ? 1 : 0;
+            qInfo("tour:   commit %s: %s %s", ok ? "ok" : "FAILED", qPrintable(msg), qPrintable(ids.join(' ')));
+        });
         connect(w, &Wallet::error, this, [this](const QString &e) {
             m_lastError = e;
             qInfo("tour:   wallet error: %s", qPrintable(e));
@@ -732,6 +1133,14 @@ public:
     {
         if (qEnvironmentVariable("BELDEX_GUI_TOUR") == QLatin1String("tokens-real")) {
             startRealTokens();
+            return;
+        }
+        if (qEnvironmentVariable("BELDEX_GUI_TOUR") == QLatin1String("history-dump")) {
+            startHistoryDump();
+            return;
+        }
+        if (qEnvironmentVariable("BELDEX_GUI_TOUR") == QLatin1String("tokens-chain")) {
+            startChainTokens();
             return;
         }
         if (qEnvironmentVariable("BELDEX_GUI_TOUR") == QLatin1String("switch")) {
@@ -889,6 +1298,11 @@ private:
     QPointer<PendingTransaction> m_tx;
     QString m_lastError;
     QString m_tokId;
+    QString m_ticker, m_addrB, m_keyB;
+    quint64 m_startHeight = 0;
+    int m_commitOk = -1;
+    quint64 m_lastHeight = 0;
+    int m_stuckSec = 0;
     QElapsedTimer m_regClock;
     quint64 m_scanHeightBeforeClose = 0;
 };
