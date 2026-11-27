@@ -74,15 +74,19 @@ BdxPage {
             RowLayout {
                 visible: page.w.tokensEnabled
                 spacing: 12
+                Layout.fillWidth: true
                 Caption { text: "Asset" }
                 BdxButton {
                     text: (page.token ? page.token.ticker + "  ·  " + App.money(page.token.unlocked) + " unlocked" : "BDX") + "  ▾"
+                    Layout.minimumWidth: implicitWidth  // the asset and its balance must not be cut off
                     onClicked: assetMenu.popup()
                 }
                 Mono {
                     text: page.w.tokens.length === 0 ? "No privacy tokens in this account yet" : "Token transfers pay their fee in BDX"
                     color: Theme.textFaint
                     font.pixelSize: 11
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
                 }
             }
 
@@ -205,10 +209,10 @@ BdxPage {
             title: "Network parameters"
             Layout.preferredWidth: 360
             Layout.alignment: Qt.AlignTop
-            KeyValue { key: "Base fee"; keyWidth: 100; value: "0.0001 BDX / output\n+ 0.006666 BDX / kB" }
-            KeyValue { key: "Flash fee"; keyWidth: 100; value: "0.0003 BDX / output\n+ 0.019998 BDX / kB" }
-            KeyValue { key: "Unlock"; keyWidth: 100; value: "10 blocks (~5 min)" }
-            KeyValue { key: "Block time"; keyWidth: 100; value: "30 seconds" }
+            KeyValue { key: "Base fee"; keyWidth: 120; value: "0.0001 BDX / output\n+ 0.006666 BDX / kB" }
+            KeyValue { key: "Flash fee"; keyWidth: 120; value: "0.0003 BDX / output\n+ 0.019998 BDX / kB" }
+            KeyValue { key: "Unlock"; keyWidth: 120; value: "10 blocks (~5 min)" }
+            KeyValue { key: "Block time"; keyWidth: 120; value: "30 seconds" }
             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.border }
             Mono {
                 text: "Amounts and recipients are encrypted on-chain with ring signatures, stealth addresses and RingCT."

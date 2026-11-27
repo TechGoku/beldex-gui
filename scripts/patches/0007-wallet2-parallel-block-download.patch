@@ -1,0 +1,219 @@
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index c80aed518..3c3103781 100755
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -32,6 +32,9 @@
+ #include <numeric>
+ #include <tuple>
+ #include <optional>
++#include <future>
++#include <map>
++#include <cstdlib>
+ #include <mutex>
+ #include <fmt/core.h>
+ #include <boost/format.hpp>
+@@ -3188,6 +3191,132 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+   refresh(trusted_daemon, start_height, blocks_fetched, received_money);
+ }
+ //----------------------------------------------------------------------------------------------------
++// Parallel block download while far behind the node. One getblocks.bin request at a time makes a
++// remote node's round trip the limit (about 1 s per 1000-block batch on a public node), so the next few
++// batches are requested at once by explicit start height. A prefetched batch is used only when its first
++// block is the block the wallet has last (the same one-block overlap the normal request returns) and its
++// blocks link up; anything else is dropped and the normal request is made. Near the tip it stays off.
++// BELDEX_WALLET_BLOCK_PREFETCH=<n> sets how many batches are requested ahead (default 3, 0 = off).
++struct wallet2::block_prefetch
++{
++  struct batch
++  {
++    cryptonote::rpc::http_client client;
++    cryptonote::rpc::GET_BLOCKS_BIN::response res;
++    bool ok = false;
++    std::future<void> done;
++  };
++
++  const cryptonote::rpc::http_client &main;
++  const bool no_miner_tx;
++  const size_t depth;
++  std::map<uint64_t, std::unique_ptr<batch>> pending;  // by start height
++
++  static size_t configured_depth()
++  {
++    const char *v = std::getenv("BELDEX_WALLET_BLOCK_PREFETCH");
++    if (!v || !*v)
++      return 3;
++    char *end = nullptr;
++    const unsigned long n = std::strtoul(v, &end, 10);
++    return end && *end == '\0' ? std::min<unsigned long>(n, 8) : 3;
++  }
++
++  block_prefetch(const cryptonote::rpc::http_client &main, bool no_miner_tx)
++    : main{main}, no_miner_tx{no_miner_tx}, depth{configured_depth()} {}
++  block_prefetch(const block_prefetch &) = delete;
++  block_prefetch &operator=(const block_prefetch &) = delete;
++  ~block_prefetch() { clear(); }
++
++  void clear()
++  {
++    for (auto &[h, b] : pending)
++      b->client.cancel();
++    for (auto &[h, b] : pending)
++      if (b->done.valid())
++        b->done.wait();
++    pending.clear();
++  }
++
++  // `next` is where the next normal request will start; `n` is the size of a full batch.
++  void schedule(uint64_t next, size_t n, uint64_t node_height)
++  {
++    while (!pending.empty() && pending.begin()->first < next)
++    {
++      auto it = pending.begin();
++      it->second->client.cancel();
++      if (it->second->done.valid())
++        it->second->done.wait();
++      pending.erase(it);
++    }
++    for (size_t k = 0; k < depth; ++k)
++    {
++      const uint64_t start = next + k * (n - 1);
++      if (start + n >= node_height)
++        break;  // only full batches; the last stretch goes through the normal request
++      if (pending.count(start))
++        continue;
++      auto b = std::make_unique<batch>();
++      b->client.copy_params_from(main);
++      if (std::string proxy = main.get_proxy(); !proxy.empty())
++        b->client.set_proxy(std::move(proxy));  // copy_params_from leaves the proxy out
++      try
++      {
++        b->done = std::async(std::launch::async, [bp = b.get(), start, nmt = no_miner_tx] {
++          try
++          {
++            cryptonote::rpc::GET_BLOCKS_BIN::request req{};
++            req.start_height = start;
++            req.prune = true;
++            req.no_miner_tx = nmt;
++            bp->res = bp->client.binary<cryptonote::rpc::GET_BLOCKS_BIN>(cryptonote::rpc::GET_BLOCKS_BIN::names().front(), req);
++            bp->ok = bp->res.status == cryptonote::rpc::STATUS_OK && bp->res.start_height == start && !bp->res.blocks.empty() &&
++                     bp->res.blocks.size() == bp->res.output_indices.size();
++          }
++          catch (...)
++          {
++            bp->ok = false;
++          }
++        });
++      }
++      catch (const std::exception &)
++      {
++        break;  // no thread for it: the normal request covers it
++      }
++      pending.emplace(start, std::move(b));
++    }
++  }
++
++  bool take(uint64_t start, const crypto::hash &first_hash, uint64_t &blocks_start_height,
++            std::vector<cryptonote::block_complete_entry> &blocks,
++            std::vector<cryptonote::rpc::GET_BLOCKS_BIN::block_output_indices> &o_indices, uint64_t &current_height)
++  {
++    auto it = pending.find(start);
++    if (it == pending.end())
++      return false;
++    batch &b = *it->second;
++    b.done.wait();
++    bool ok = b.ok;
++    if (ok)
++    {
++      cryptonote::block first;
++      crypto::hash h;
++      ok = cryptonote::parse_and_validate_block_from_blob(b.res.blocks.front().block, first, h) && h == first_hash;
++    }
++    if (!ok)
++    {
++      clear();
++      return false;
++    }
++    blocks_start_height = b.res.start_height;
++    blocks = std::move(b.res.blocks);
++    o_indices = std::move(b.res.output_indices);
++    current_height = b.res.current_height;
++    pending.erase(it);
++    return true;
++  }
++};
++
+ void wallet2::pull_and_parse_next_blocks(uint64_t start_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history, const std::vector<cryptonote::block_complete_entry> &prev_blocks, const std::vector<parsed_block> &prev_parsed_blocks, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<parsed_block> &parsed_blocks, bool &last, bool &error, std::exception_ptr &exception)
+ {
+   error = false;
+@@ -3210,8 +3339,20 @@ void wallet2::pull_and_parse_next_blocks(uint64_t start_height, uint64_t &blocks
+     // pull the new blocks
+     std::vector<cryptonote::rpc::GET_BLOCKS_BIN::block_output_indices> o_indices;
+     uint64_t current_height;
+-    pull_blocks(start_height, blocks_start_height, short_chain_history, blocks, o_indices, current_height);
++    bool prefetched = false;
++    if (m_block_prefetch && start_height == 0 && !prev_parsed_blocks.empty())
++      prefetched = m_block_prefetch->take(cryptonote::get_block_height(prev_parsed_blocks.back().block), prev_parsed_blocks.back().hash,
++                                          blocks_start_height, blocks, o_indices, current_height);
++    if (!prefetched)
++      pull_blocks(start_height, blocks_start_height, short_chain_history, blocks, o_indices, current_height);
+     THROW_WALLET_EXCEPTION_IF(blocks.size() != o_indices.size(), error::wallet_internal_error, "Mismatched sizes of blocks and o_indices");
++    if (m_block_prefetch)
++    {
++      if (start_height == 0 && blocks.size() >= 100)
++        m_block_prefetch->schedule(blocks_start_height + blocks.size() - 1, blocks.size(), current_height);
++      else
++        m_block_prefetch->clear();
++    }
+ 
+     tools::threadpool& tpool = tools::threadpool::getInstance();
+     tools::threadpool::waiter waiter;
+@@ -3231,6 +3372,14 @@ void wallet2::pull_and_parse_next_blocks(uint64_t start_height, uint64_t &blocks
+       // TODO sean -> parsed_blocks o_indices is now a nlohmann::json and o_indices is the struct from the binary
+       parsed_blocks[i].o_indices = std::move(o_indices[i]);
+     }
++    // A prefetched batch must link up block by block (the normal request gets this from the daemon's own chain).
++    for (size_t i = 1; prefetched && !error && i < parsed_blocks.size(); ++i)
++      if (parsed_blocks[i].block.prev_id != parsed_blocks[i - 1].hash)
++      {
++        MWARNING("Prefetched blocks do not link up at height " << blocks_start_height + i << "; fetching again");
++        m_block_prefetch->clear();
++        error = true;
++      }
+ 
+     std::mutex error_lock;
+     for (size_t i = 0; i < blocks.size(); ++i)
+@@ -3794,6 +3943,12 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+   if (check_pool)
+     process_pool_txs = get_pool_state(true /*refreshed*/);
+ 
++  std::optional<block_prefetch> prefetch;
++  if (!m_offline)
++    prefetch.emplace(m_http_client, m_refresh_type == RefreshNoCoinbase);
++  m_block_prefetch = prefetch && prefetch->depth > 0 ? &*prefetch : nullptr;
++  BELDEX_DEFER { m_block_prefetch = nullptr; };
++
+   bool first = true, last = false;
+   while(m_run.load(std::memory_order_relaxed))
+   {
+@@ -3887,6 +4042,8 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+     {
+       blocks_fetched += added_blocks;
+       waiter.wait(&tpool);
++      if (m_block_prefetch)
++        m_block_prefetch->clear();
+       if(try_count < 3)
+       {
+         LOG_PRINT_L1("Another try pull_blocks (try_count=" << try_count << ")...");
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 746dc70f1..24c0e6413 100755
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1927,6 +1927,8 @@ private:
+     std::unordered_map<crypto::public_key, crypto::key_image> m_cold_key_images;
+ 
+     std::atomic<bool> m_run;
++    struct block_prefetch;                       // parallel block download (wallet2.cpp)
++    block_prefetch *m_block_prefetch = nullptr;  // set while refresh() runs
+ 
+     bool m_trusted_daemon;
+     i_wallet2_callback* m_callback;

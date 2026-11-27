@@ -64,6 +64,7 @@ ColumnLayout {
                                                    : "Disconnected" + (App.nodeFor(shell.wallet.netType).length ? " · " + App.nodeFor(shell.wallet.netType) : ""))
                         : shell.wallet.synchronized ? "Synced · " + (App.usingLocalNode ? "local node" : shell.wallet.daemonAddress)
                         : "Syncing " + (shell.wallet.syncProgress * 100).toFixed(1) + "% · " + App.fmtHeight(shell.wallet.blockHeight) + " / " + App.fmtHeight(shell.wallet.daemonHeight)
+                          + (shell.wallet.syncSecondsLeft >= 0 ? " · " + App.fmtTimeLeft(shell.wallet.syncSecondsLeft) : "")
                 }
             }
             Item { Layout.fillWidth: true }

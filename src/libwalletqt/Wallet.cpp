@@ -359,6 +359,32 @@ double Wallet::syncProgress() const
     return std::clamp(double(m_height - start) / double(m_daemonHeight - start), 0.0, 1.0);
 }
 
+void Wallet::updateSyncRate()
+{
+    // Below the restore height core only fetches block hashes, hundreds of times faster than the scan
+    // after it; that rate says nothing about the time left, so the estimate starts at the restore height.
+    if (m_synced || m_daemonHeight == 0 || m_height >= m_daemonHeight || m_height < m_restoreHeight) {
+        m_rateSamples.clear();
+        m_syncSecondsLeft = -1;
+        return;
+    }
+    if (!m_rateClock.isValid())
+        m_rateClock.start();
+    const qint64 now = m_rateClock.elapsed();
+    if (!m_rateSamples.empty() && m_height < m_rateSamples.back().second)
+        m_rateSamples.clear();  // a rescan started over
+    m_rateSamples.emplace_back(now, m_height);
+    while (m_rateSamples.size() > 2 && now - m_rateSamples.front().first > 60000)
+        m_rateSamples.pop_front();
+    const auto [t0, h0] = m_rateSamples.front();
+    if (now - t0 < 10000 || m_height <= h0) {
+        m_syncSecondsLeft = -1;  // too early to tell, or stalled
+        return;
+    }
+    const double blocksPerSec = double(m_height - h0) * 1000.0 / double(now - t0);
+    m_syncSecondsLeft = double(m_daemonHeight - m_height) / blocksPerSec;
+}
+
 QVariantList Wallet::recentTransactions() const
 {
     QVariantList out;
@@ -475,6 +501,7 @@ void Wallet::pollStatus()
                     m_daemonHeight = s.daemonHeight;
                     m_synced = s.synced;
                     m_hardFork = s.hf;
+                    updateSyncRate();
                     if (scanEnded)
                         flushDeferredReloads();
                     else if (m_scanning)

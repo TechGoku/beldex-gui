@@ -77,6 +77,11 @@ public:
             "summit willow cobalt radar saffron timber zephyr bamboo glacier onyx velvet orbit");
 
         step(1500, [this] { shot("01-wizard"); });
+        step(100, [this] { setWizardStep("restoreSeed"); });
+        step(600, [this] { shot("01b-restore-seed"); });
+        step(100, [this] { setWizardStep("restoreKeys"); });
+        step(600, [this] { shot("01c-restore-keys"); });
+        step(100, [this] { setWizardStep("home"); });
         step(200, [this, walletDir, seed] {
             setProp("page", "overview");
             m_mgr.restoreFromSeed(walletDir, QStringLiteral("demo"), QStringLiteral("demo"), seed, 0,
@@ -137,9 +142,9 @@ public:
     void pollRestore(int i, int maxTicks)
     {
         auto *w = m_mgr.wallet();
-        if (w && (i < 12 || i % 10 == 0 || w->synchronized()))
-            qInfo("tour: t=%4ds conn=%d synced=%d progress=%.3f wallet=%.0f daemon=%.0f pending-jobs=%lld", (i + 1) * 3,
-                  w->connectionStatus(), w->synchronized(), w->syncProgress(), w->blockHeight(), w->daemonHeight(),
+        if (w)
+            qInfo("tour: t=%4ds conn=%d synced=%d progress=%.3f wallet=%.0f daemon=%.0f left=%.0fs pending-jobs=%lld", (i + 1) * 3,
+                  w->connectionStatus(), w->synchronized(), w->syncProgress(), w->blockHeight(), w->daemonHeight(), w->syncSecondsLeft(),
                   qlonglong(w->findChildren<QFutureWatcherBase *>(Qt::FindDirectChildrenOnly).size()));
         if (i == 6)
             shot("restore-sync-20s");
@@ -1269,6 +1274,13 @@ private:
     {
         if (auto *app = m_engine.singletonInstance<QObject *>("BeldexGui", "App"))
             app->setProperty(name, v);
+    }
+    void setWizardStep(const char *step)
+    {
+        if (m_engine.rootObjects().isEmpty())
+            return;
+        if (auto *wiz = m_engine.rootObjects().first()->findChild<QObject *>(QStringLiteral("wizard")))
+            wiz->setProperty("step", QString::fromLatin1(step));
     }
     void shot(const QString &name)
     {

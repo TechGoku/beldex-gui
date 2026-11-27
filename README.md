@@ -23,7 +23,7 @@ There is no `beldex-wallet-rpc` process, no localhost RPC port, no Node.js and n
 | Screen       | What it does |
 |--------------|--------------|
 | Wizard       | Create a wallet (25-word seed backup plus a 3-word check), restore from seed (with restore height or date, optional seed offset), restore from keys / view-only, open from a folder or file. Mainnet, testnet or devnet. |
-| Overview     | Explorer-style stat grid (balance, unlocked, locked, staked, wallet and network height, sync %, hard fork), recent transactions, address QR code. |
+| Overview     | Explorer-style stat grid (balance, unlocked, locked, staked, wallet and network height, sync % with time left, hard fork), recent transactions, address QR code. |
 | Send         | Several recipients, `beldex:` URI paste, address book picker, **Flash** transactions, fee estimate, send all, confirmation dialog. |
 | Receive      | Accounts, subaddresses with editable labels, QR codes, payment links with amount and description. |
 | History      | Filters (in, out, rewards, stakes, BNS, pending), search, details dialog (note, tx key, explorer link), CSV export. |
@@ -224,6 +224,15 @@ automatically, and they should go upstream:
   then reads the history size (history lock); `TransactionHistoryImpl::refresh()` took the history lock first and then the
   wallet lock. A history reload from another thread that raced a scan froze both for good (the wallet stopped syncing).
   On a busy chain it happened right after sending a transaction. The patch takes the wallet lock first in `refresh()`.
+
+- **`0007`: syncing waited on one node request at a time.** `wallet2::refresh` keeps a single 1000-block
+  `getblocks.bin` request in flight, so a remote node's round trip (about 1 s per batch on a public node) capped the scan
+  at roughly 1,200 blocks/s. While the wallet is more than a few batches behind, the patch requests the next 3 batches at
+  once by start height, each on its own connection with the same node, login and proxy. A prefetched batch is used only
+  if its first block is the wallet's last block (the overlap the normal request returns) and every block links to the
+  previous one; anything else is dropped and fetched the normal way. The last stretch near the tip is unchanged. A
+  100,000-block mainnet restore against `publicnode1` went from 113 s to 81 s (scan rate 1,230 → 1,960 blocks/s).
+  `BELDEX_WALLET_BLOCK_PREFETCH=<n>` sets the depth (0 turns it off).
 
 - **`WalletImpl::stop()` couldn't stop a scan.** It took the refresh lock that the scan holds for its whole duration,
   then set `wallet2`'s atomic stop flag, so it only returned once the scan had finished. The patch sets the flag without

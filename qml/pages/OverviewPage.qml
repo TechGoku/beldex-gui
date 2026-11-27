@@ -33,7 +33,8 @@ BdxPage {
             value: !page.w.connected ? "offline" : page.w.synchronized ? "100" : (page.w.syncProgress * 100).toFixed(1)
             unit: page.w.connected ? "%" : ""
             valueColor: !page.w.connected ? Theme.red : page.w.synchronized ? Theme.green : Theme.amber
-            sub: page.w.synchronized ? "up to date" : page.w.connected ? "scanning blocks…" : "check Settings › Node"
+            sub: page.w.synchronized ? "up to date" : !page.w.connected ? "check Settings › Node"
+                 : page.w.syncSecondsLeft >= 0 ? App.fmtTimeLeft(page.w.syncSecondsLeft) : "scanning blocks…"
         }
         StatTile {
             label: "Hard fork"

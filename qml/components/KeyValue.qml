@@ -10,7 +10,8 @@ RowLayout {
     property int keyWidth: 170
     spacing: 16
     Layout.fillWidth: true
-    Caption { id: k; Layout.preferredWidth: parent.keyWidth; Layout.alignment: Qt.AlignTop; Layout.topMargin: 3 }
+    // Never narrower than the key itself: a wrapped key ("BLOCK / TIME") misaligns the row.
+    Caption { id: k; Layout.preferredWidth: Math.max(parent.keyWidth, implicitWidth); Layout.alignment: Qt.AlignTop; Layout.topMargin: 3 }
     Mono {
         id: v
         Layout.fillWidth: true

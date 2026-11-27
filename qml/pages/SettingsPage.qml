@@ -246,10 +246,10 @@ BdxPage {
             Panel {
                 title: "Wallet"
                 Layout.fillWidth: true
-                KeyValue { key: "Name"; keyWidth: 120; value: page.w.name }
-                KeyValue { key: "Network"; keyWidth: 120; value: page.w.netName }
-                KeyValue { key: "Restore height"; keyWidth: 120; value: App.fmtHeight(page.w.restoreHeight) }
-                KeyValue { key: "Type"; keyWidth: 120; value: page.w.watchOnly ? "view-only" : "full (can spend)" }
+                KeyValue { key: "Name"; keyWidth: 170; value: page.w.name }
+                KeyValue { key: "Network"; keyWidth: 170; value: page.w.netName }
+                KeyValue { key: "Restore height"; keyWidth: 170; value: App.fmtHeight(page.w.restoreHeight) }
+                KeyValue { key: "Type"; keyWidth: 170; value: page.w.watchOnly ? "view-only" : "full (can spend)" }
 
                 Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.border }
 
@@ -288,10 +288,10 @@ BdxPage {
             Panel {
                 title: "About"
                 Layout.fillWidth: true
-                KeyValue { key: "Version"; keyWidth: 120; value: "beldex-gui " + WalletManager.version }
-                KeyValue { key: "Wallet engine"; keyWidth: 120; value: WalletManager.engineName; valueColor: WalletManager.isDemo ? Theme.amber : Theme.text }
-                KeyValue { key: "Log file"; keyWidth: 120; value: WalletManager.prettyPath(WalletManager.logPath); visible: WalletManager.logPath.length > 0; valueColor: Theme.textDim }
-                KeyValue { key: "Toolkit"; keyWidth: 120; value: "Qt 6 / QML · native C++" }
+                KeyValue { key: "Version"; keyWidth: 170; value: "beldex-gui " + WalletManager.version }
+                KeyValue { key: "Wallet engine"; keyWidth: 170; value: WalletManager.engineName; valueColor: WalletManager.isDemo ? Theme.amber : Theme.text }
+                KeyValue { key: "Log file"; keyWidth: 170; value: WalletManager.prettyPath(WalletManager.logPath); visible: WalletManager.logPath.length > 0; valueColor: Theme.textDim }
+                KeyValue { key: "Toolkit"; keyWidth: 170; value: "Qt 6 / QML · native C++" }
                 RowLayout {
                     spacing: 8
                     BdxButton { compact: true; text: "beldex.io"; onClicked: Qt.openUrlExternally("https://beldex.io") }

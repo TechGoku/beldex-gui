@@ -68,7 +68,12 @@ BdxDialog {
         },
         BdxButton { text: "Cancel"; onClicked: root.close(); enabled: !root.committing },
         BdxButton {
-            text: root.tx && root.tx.kind === "unlock" ? "Request unlock" : "Send"
+            // Name the action being confirmed, not always "Send".
+            text: !root.tx ? "Send" : ({
+                "sweep": "Sweep", "stake": "Stake", "unlock": "Request unlock", "bns-buy": "Buy name",
+                "bns-renew": "Renew", "bns-update": "Update", "token-register": "Register",
+                "token-mint": "Mint", "token-burn": "Burn", "token-update": "Update"
+            }[root.tx.kind] || "Send")
             variant: "primary"
             enabled: !root.committing
             onClicked: {

@@ -8,16 +8,25 @@ import BeldexGui
 // the wallet behind the seed backup + verification steps before showing the wallet.
 Item {
     id: wiz
+    objectName: "wizard"  // the screenshot tour opens its steps
     property string step: App.wizardHold && WalletManager.newWalletSeed.length > 0 ? "seed" : "home"
     // Mainnet only unless test networks are enabled (WalletManager.showTestNetworks).
     property int net: WalletManager.showTestNetworks ? App.settings.netType : 0
-    property var wallets: WalletManager.findWallets(App.walletDir)
+    property var wallets: listWallets()
     property string openPath: ""
     property var verifyIdx: []
 
     readonly property var seedWords: WalletManager.newWalletSeed.split(" ").filter(s => s.length > 0)
 
-    function refreshWallets() { wallets = WalletManager.findWallets(App.walletDir) }
+    // The wallets folder, plus the last wallet used when it lives somewhere else (opened with Browse…).
+    function listWallets() {
+        const list = WalletManager.findWallets(App.walletDir)
+        const last = App.settings.lastWalletPath
+        if (last.length > 0 && !list.some(w => w.path === last) && WalletManager.walletExists(last))
+            list.unshift({ name: last.split(/[\\/]/).pop(), path: last, modified: "last used" })
+        return list
+    }
+    function refreshWallets() { wallets = listWallets() }
     function pickVerifyWords() {
         const idx = []
         while (idx.length < 3) {
@@ -309,14 +318,16 @@ Item {
                         label: "Restore height"
                         placeholderText: "0"
                         validator: IntValidator { bottom: 0 }
-                        help: "Block height or date of your first transaction. Speeds up sync a lot."
+                        help: Number(text || 0) > 0 ? "Block height or date of your first transaction. Speeds up sync a lot."
+                              : "Empty scans the whole chain, which can take an hour or more on mainnet. A date before your first transaction is much faster."
                         Layout.fillWidth: true
                     }
                     BdxTextField {
                         id: rDate
-                        label: "…or date (YYYY-MM-DD)"
-                        placeholderText: "2024-01-31"
+                        label: "Or date"
+                        placeholderText: "YYYY-MM-DD"
                         Layout.preferredWidth: 230
+                        Layout.alignment: Qt.AlignTop
                         field.onTextEdited: {
                             if (/^\d{4}-\d{2}-\d{2}$/.test(field.text))
                                 rHeight.text = String(WalletManager.estimateHeightForDate(wiz.net, field.text))
@@ -362,7 +373,28 @@ Item {
                     monoSmall: true
                     error: text.length > 0 && !/^[0-9a-fA-F]{64}$/.test(text) ? "64 hex characters" : ""
                 }
-                BdxTextField { id: kHeight; label: "Restore height"; placeholderText: "0"; validator: IntValidator { bottom: 0 } }
+                RowLayout {
+                    spacing: 12
+                    BdxTextField {
+                        id: kHeight
+                        label: "Restore height"
+                        placeholderText: "0"
+                        validator: IntValidator { bottom: 0 }
+                        help: Number(text || 0) > 0 ? "Block height or date of your first transaction. Speeds up sync a lot."
+                              : "Empty scans the whole chain, which can take an hour or more on mainnet. A date before your first transaction is much faster."
+                        Layout.fillWidth: true
+                    }
+                    BdxTextField {
+                        label: "Or date"
+                        placeholderText: "YYYY-MM-DD"
+                        Layout.preferredWidth: 230
+                        Layout.alignment: Qt.AlignTop
+                        field.onTextEdited: {
+                            if (/^\d{4}-\d{2}-\d{2}$/.test(field.text))
+                                kHeight.text = String(WalletManager.estimateHeightForDate(wiz.net, field.text))
+                        }
+                    }
+                }
                 BdxTextField { id: kName; label: "Wallet name"; error: wiz.nameError(text) }
                 RowLayout {
                     spacing: 12

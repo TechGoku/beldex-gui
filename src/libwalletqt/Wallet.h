@@ -14,6 +14,7 @@
 #include <QSet>
 #include <QVariant>
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -59,6 +60,8 @@ class Wallet : public QObject {
     Q_PROPERTY(double restoreHeight READ restoreHeight NOTIFY syncChanged)
     Q_PROPERTY(double syncProgress READ syncProgress NOTIFY syncChanged)            // 0..1
     Q_PROPERTY(bool synchronized READ synchronized NOTIFY syncChanged)
+    // Estimated seconds until synced, from the scan rate over the last minute; -1 while unknown.
+    Q_PROPERTY(double syncSecondsLeft READ syncSecondsLeft NOTIFY syncChanged)
     Q_PROPERTY(int hardFork READ hardFork NOTIFY syncChanged)
 
     // collections
@@ -115,6 +118,7 @@ public:
     double daemonHeight() const { return double(m_daemonHeight); }
     double restoreHeight() const { return double(m_restoreHeight); }
     double syncProgress() const;
+    double syncSecondsLeft() const { return m_syncSecondsLeft; }
     bool synchronized() const { return m_synced; }
     int hardFork() const { return m_hardFork; }
 
@@ -238,6 +242,7 @@ private:
     void endReload(Reload r);
     void flushDeferredReloads();
     void snapshotDuringScan();
+    void updateSyncRate();
     void applyAccounts(const std::vector<bdx::AccountRecord> &accounts);
     void applyHistory(std::vector<bdx::TxRecord> txs);
     void applySubaddresses(const std::vector<bdx::SubaddressRecord> &subs);
@@ -292,6 +297,9 @@ private:
     bdx::ConnStatus m_conn = bdx::ConnStatus::Disconnected;
     quint64 m_height = 0, m_daemonHeight = 0, m_restoreHeight = 0, m_syncStartHeight = 0;
     bool m_synced = false;
+    std::deque<std::pair<qint64, quint64>> m_rateSamples;  // (ms, height) over the last minute
+    QElapsedTimer m_rateClock;
+    double m_syncSecondsLeft = -1;
     int m_hardFork = 0;
     TransactionHistoryModel *m_history;
 };

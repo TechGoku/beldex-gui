@@ -187,6 +187,15 @@ QtObject {
 
     // --- formatting ------------------------------------------------------------------------------
     function money(v) { return settings.hideBalance ? "••••••" : v }
+    // Seconds left -> "about 5 min left" (empty while unknown).
+    function fmtTimeLeft(s) {
+        if (!(s >= 0)) return ""
+        if (s < 60) return "less than a minute left"
+        const m = Math.round(s / 60)
+        if (m < 60) return "about " + m + " min left"
+        const h = Math.floor(m / 60)
+        return "about " + h + " h" + (m % 60 ? " " + (m % 60) + " min" : "") + " left"
+    }
     function fmtHeight(h) { return Number(h).toLocaleString(Qt.locale("en_US"), "f", 0) }
     // Block height -> approx. date, using Beldex's 30 s block time.
     function heightToDate(h) {

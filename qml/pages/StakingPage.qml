@@ -14,7 +14,7 @@ BdxPage {
         columns: 4
         StatTile { label: "Staked by you"; value: App.money(page.w.stakedBalance); unit: "BDX"; valueColor: Theme.green }
         StatTile { label: "Your stakes"; value: String(page.w.stakes.length); sub: page.w.stakes.filter(s => s.state === "active").length + " active" }
-        StatTile { label: "Staking requirement"; value: "10000"; unit: "BDX"; sub: "full master node (operators can share it)" }
+        StatTile { label: "Staking requirement"; value: "10,000"; unit: "BDX"; sub: "full master node (operators can share it)" }
         StatTile { label: "Available to stake"; value: App.money(page.w.unlockedBalance); unit: "BDX"; sub: "unlocked balance" }
     }
 
